@@ -15,6 +15,7 @@ UDP Server — 模拟 TCP 可靠传输（GBN 协议）。
   四次挥手: FIN → FIN
 """
 
+import config
 import socket
 import struct
 import random
@@ -23,17 +24,6 @@ import os
 import argparse
 import threading
 from datetime import datetime
-
-# 报文类型 (bit flags)
-FLAG_SYN = 0x01
-FLAG_ACK = 0x02
-FLAG_FIN = 0x04
-
-# 学号校验常量
-STUDENT_ID_MASK = 0x5A3C
-
-# 丢包率
-DROP_RATE = 0.25
 
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_log.txt")
 LOG_LOCK = threading.Lock()
@@ -51,7 +41,7 @@ def log_event(fmt: str, *args) -> None:
 
 def verify_student_id(received: int) -> bool:
     """验证学号：received XOR 0x5A3C 应在 [0, 9999] 范围内"""
-    result = received ^ STUDENT_ID_MASK
+    result = received ^ config.STUDENT_ID_MASK
     return 0 <= result <= 9999
 
 
@@ -62,8 +52,8 @@ def pack_header(flags: int, seq: int = 0, ack: int = 0, length: int = 0) -> byte
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="UDP GBN Server")
-    parser.add_argument("--host", default="0.0.0.0", help="服务器监听地址")
-    parser.add_argument("--port", type=int, default=12345, help="服务器监听端口")
+    parser.add_argument("--host", default=config.DEFAULT_HOST, help="服务器监听地址")
+    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT, help="服务器监听端口")
     args = parser.parse_args()
 
     with open(LOG_PATH, "w", encoding="utf-8") as f:
@@ -83,7 +73,7 @@ def main() -> None:
         flags, seq, ack, length = struct.unpack("!BIII", data[:13])
         payload = data[13:]
 
-        if not (flags & FLAG_SYN):
+        if not (flags & config.FLAG_SYN):
             continue
 
         # 从 SYN payload 提取 StudentID(2B) + TotalPackets(2B)
@@ -96,14 +86,14 @@ def main() -> None:
                       client_addr, student_id, total_pkts)
 
             # 发送 SYN-ACK
-            synack = pack_header(FLAG_SYN | FLAG_ACK, 0, 1, 0)
+            synack = pack_header(config.FLAG_SYN | config.FLAG_ACK, 0, 1, 0)
             sock.sendto(synack, client_addr)
             log_event("[{}] 发送 SYN-ACK", client_addr)
 
             # 等待连接确认 ACK
             data2, _ = sock.recvfrom(4096)
             ack_flags, _, ack_num, _ = struct.unpack("!BIII", data2[:13])
-            if ack_flags & FLAG_ACK and ack_num == 1:
+            if ack_flags & config.FLAG_ACK and ack_num == 1:
                 log_event("[{}] 收到连接确认 ACK, 进入数据传输阶段", client_addr)
             break
         else:
@@ -127,11 +117,11 @@ def main() -> None:
         flags, seq, ack, data_len = struct.unpack("!BIII", data[:13])
         payload = data[13:13 + data_len]
 
-        if not (flags & FLAG_ACK):
+        if not (flags & config.FLAG_ACK):
             continue
 
         # 模拟丢包
-        if rng.random() < DROP_RATE:
+        if rng.random() < config.DROP_RATE:
             log_event("丢弃 第{}个数据包 seq={}（模拟丢包）", seq + 1, seq)
             continue
 
@@ -140,13 +130,13 @@ def main() -> None:
             log_event("接收 第{}个数据包 seq={} ({}B), 发送累积ACK={}",
                       seq + 1, seq, data_len, expected_seq)
 
-            ack_pkt = pack_header(FLAG_ACK, 0, expected_seq, 0)
+            ack_pkt = pack_header(config.FLAG_ACK, 0, expected_seq, 0)
             sock.sendto(ack_pkt, client_addr)
         else:
             log_event("丢弃乱序包 seq={} (期望 seq={}), 重发 ACK={}",
                       seq + 1, expected_seq + 1, expected_seq)
 
-            ack_pkt = pack_header(FLAG_ACK, 0, expected_seq, 0)
+            ack_pkt = pack_header(config.FLAG_ACK, 0, expected_seq, 0)
             sock.sendto(ack_pkt, client_addr)
 
     log_event("全部 {} 个数据包接收完毕", total_pkts)
@@ -159,9 +149,9 @@ def main() -> None:
             if len(data) < 13:
                 continue
             flags, _, _, _ = struct.unpack("!BIII", data[:13])
-            if flags & FLAG_FIN:
+            if flags & config.FLAG_FIN:
                 log_event("收到 FIN，发送 FIN 确认关闭")
-                fin_pkt = pack_header(FLAG_FIN, 0, 0, 0)
+                fin_pkt = pack_header(config.FLAG_FIN, 0, 0, 0)
                 sock.sendto(fin_pkt, client_addr)
                 break
         except socket.timeout:

@@ -6,11 +6,7 @@ import socket
 import threading
 from datetime import datetime
 
-# 报文类型常量
-TYPE_INIT = 1
-TYPE_AGREE = 2
-TYPE_REQUEST = 3
-TYPE_ANSWER = 4
+import config
 
 # 日志锁，保证多线程写日志安全
 _LOG_LOCK = threading.Lock()

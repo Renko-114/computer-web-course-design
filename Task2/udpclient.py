@@ -15,6 +15,7 @@ UDP Client — 模拟 TCP 可靠传输（GBN 协议）。
   [1B Flags][4B Seq][4B Ack][4B Length] + Payload
 """
 
+import config
 import socket
 import struct
 import random
@@ -27,22 +28,6 @@ import argparse
 from datetime import datetime
 
 import pandas as pd
-
-# 报文类型 (bit flags)
-FLAG_SYN = 0x01
-FLAG_ACK = 0x02
-FLAG_FIN = 0x04
-
-# 学号校验常量
-STUDENT_ID_MASK = 0x5A3C
-
-# ── 可调参数 ──
-TOTAL_PACKETS = 30         # 总发包数
-PACKET_SIZE_MIN = 40       # 每包最小字节数
-PACKET_SIZE_MAX = 80       # 每包最大字节数
-WINDOW_SIZE = 5            # 发送窗口（包数）
-INITIAL_TIMEOUT = 0.3      # 初始超时 300ms
-FAST_RETX_THRESHOLD = 3    # 快速重传阈值（重复 ACK 次数）
 
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_log.txt")
 
@@ -63,7 +48,7 @@ def pack_header(flags: int, seq: int = 0, ack: int = 0, length: int = 0) -> byte
 
 def compute_student_id(last4: int) -> int:
     """计算 StudentID 字段：学号后4位 XOR 0x5A3C"""
-    return last4 ^ STUDENT_ID_MASK
+    return last4 ^ config.STUDENT_ID_MASK
 
 
 class ReliableUDPClient:
@@ -85,7 +70,7 @@ class ReliableUDPClient:
         self.packet_sizes = []     # 每包大小
 
         # 超时
-        self.rto = INITIAL_TIMEOUT
+        self.rto = config.INITIAL_TIMEOUT
 
         # 快速重传
         self.last_ack = -1
@@ -105,14 +90,14 @@ class ReliableUDPClient:
                     continue
                 flags, seq, ack, _ = struct.unpack("!BIII", data[:13])
 
-                if flags & FLAG_ACK:
+                if flags & config.FLAG_ACK:
                     self.ack_queue.put(ack)
                     # 快速重传检测
                     if ack == self.last_ack:
                         self.dup_ack_count += 1
-                        if self.dup_ack_count == FAST_RETX_THRESHOLD:
+                        if self.dup_ack_count == config.FAST_RETX_THRESHOLD:
                             log_event("收到 {} 个重复 ACK={}，触发快速重传",
-                                      FAST_RETX_THRESHOLD, ack)
+                                      config.FAST_RETX_THRESHOLD, ack)
                             self._fast_retransmit()
                     else:
                         self.last_ack = ack
@@ -131,14 +116,14 @@ class ReliableUDPClient:
 
     def _fast_retransmit(self):
         """快速重传：收到 3 个重复 ACK 时重传窗口内所有未确认包"""
-        if self.base >= TOTAL_PACKETS:
+        if self.base >= config.TOTAL_PACKETS:
             return
 
-        for i in range(self.base, min(self.base + WINDOW_SIZE, TOTAL_PACKETS)):
+        for i in range(self.base, min(self.base + config.WINDOW_SIZE, config.TOTAL_PACKETS)):
             if not self.packets[i]['acked']:
                 pkt_info = self.packets[i]
                 pkt_info['sent_time'] = self._send_packet(
-                    FLAG_ACK, i, 0, pkt_info['data'])
+                    config.FLAG_ACK, i, 0, pkt_info['data'])
                 pkt_info['retrans_count'] += 1
                 self.total_sends += 1
                 self.retransmit_count += 1
@@ -152,27 +137,27 @@ class ReliableUDPClient:
         """三次握手建立连接"""
         log_event("=== 三次握手阶段 ===")
 
-        student_id = compute_student_id(2913)
+        student_id = compute_student_id(config.STUDENT_ID_LAST4)
 
         while True:
             # SYN payload: StudentID(2B) + TotalPackets(2B)
-            syn_data = struct.pack("!HH", student_id, TOTAL_PACKETS)
-            self._send_packet(FLAG_SYN, 0, 0, syn_data)
-            log_event("发送 SYN: StudentID={:#x}, TotalPackets={}", student_id, TOTAL_PACKETS)
+            syn_data = struct.pack("!HH", student_id, config.TOTAL_PACKETS)
+            self._send_packet(config.FLAG_SYN, 0, 0, syn_data)
+            log_event("发送 SYN: StudentID={:#x}, TotalPackets={}", student_id, config.TOTAL_PACKETS)
 
             try:
                 data, _ = self.sock.recvfrom(4096)
                 if len(data) < 13:
                     continue
                 flags, seq, ack, _ = struct.unpack("!BIII", data[:13])
-                if (flags & FLAG_SYN) and (flags & FLAG_ACK) and ack == 1:
+                if (flags & config.FLAG_SYN) and (flags & config.FLAG_ACK) and ack == 1:
                     log_event("收到 SYN-ACK，连接建立中...")
                     break
             except socket.timeout:
                 continue
 
         # 发送连接确认 ACK
-        self._send_packet(FLAG_ACK, 1, 1)
+        self._send_packet(config.FLAG_ACK, 1, 1)
         log_event("发送连接确认 ACK，进入数据传输阶段")
 
     def _terminate_connection(self):
@@ -180,7 +165,7 @@ class ReliableUDPClient:
         log_event("=== 四次挥手阶段 ===")
 
         while True:
-            self._send_packet(FLAG_FIN, TOTAL_PACKETS, 0)
+            self._send_packet(config.FLAG_FIN, config.TOTAL_PACKETS, 0)
             log_event("发送 FIN")
 
             try:
@@ -188,7 +173,7 @@ class ReliableUDPClient:
                 if len(data) < 13:
                     continue
                 flags, _, _, _ = struct.unpack("!BIII", data[:13])
-                if flags & FLAG_FIN:
+                if flags & config.FLAG_FIN:
                     log_event("收到服务器 FIN，连接关闭")
                     break
             except socket.timeout:
@@ -211,8 +196,8 @@ class ReliableUDPClient:
         )
 
         rng = random.Random()
-        for i in range(TOTAL_PACKETS):
-            pkt_size = rng.randint(PACKET_SIZE_MIN, PACKET_SIZE_MAX)
+        for i in range(config.TOTAL_PACKETS):
+            pkt_size = rng.randint(config.PACKET_SIZE_MIN, config.PACKET_SIZE_MAX)
             self.packet_sizes.append(pkt_size)
             data = base_text.encode("ascii")[:pkt_size]
             if len(data) < pkt_size:
@@ -229,13 +214,13 @@ class ReliableUDPClient:
 
         self.recv_thread.start()
 
-        while self.base < TOTAL_PACKETS:
+        while self.base < config.TOTAL_PACKETS:
             # 发送窗口内未发送的包
-            while self.next_seq < min(self.base + WINDOW_SIZE, TOTAL_PACKETS):
+            while self.next_seq < min(self.base + config.WINDOW_SIZE, config.TOTAL_PACKETS):
                 pkt = self.packets[self.next_seq]
                 if pkt['sent_time'] == 0:
                     pkt['sent_time'] = self._send_packet(
-                        FLAG_ACK, self.next_seq, 0, pkt['data'])
+                        config.FLAG_ACK, self.next_seq, 0, pkt['data'])
                     self.send_times[self.next_seq] = pkt['sent_time']
                     pkt['retrans_count'] += 1
                     self.total_sends += 1
@@ -256,13 +241,13 @@ class ReliableUDPClient:
                     self.base = ack_num
 
                     # 计算 RTT（对刚被确认的最老包）
-                    if old_base < TOTAL_PACKETS and old_base in self.send_times:
+                    if old_base < config.TOTAL_PACKETS and old_base in self.send_times:
                         rtt_ms = (time.time() - self.send_times[old_base]) * 1000
                         self.rtt_samples.append(rtt_ms)
 
                     # 标记已确认的包
                     for s in range(old_base, self.base):
-                        if s < TOTAL_PACKETS:
+                        if s < config.TOTAL_PACKETS:
                             self.packets[s]['acked'] = True
                             byte_s = sum(self.packet_sizes[:s])
                             byte_e = byte_s + self.packet_sizes[s] - 1
@@ -280,13 +265,13 @@ class ReliableUDPClient:
 
             except queue.Empty:
                 # 超时重传整个窗口
-                if self.base < TOTAL_PACKETS:
+                if self.base < config.TOTAL_PACKETS:
                     log_event("超时 {:.0f}ms（RTO={:.0f}ms），重传窗口 seq={}..{}",
                               self.rto * 1000, self.rto * 1000,
                               self.base, self.next_seq - 1)
                     self.retransmit_count += 1
                     for s in range(self.base, self.next_seq):
-                        if s < TOTAL_PACKETS:
+                        if s < config.TOTAL_PACKETS:
                             self.packets[s]['sent_time'] = 0
                     self.next_seq = self.base
 
@@ -300,11 +285,11 @@ class ReliableUDPClient:
             log_event("无 RTT 样本")
             return
 
-        loss_rate = (self.total_sends - TOTAL_PACKETS) / self.total_sends * 100
+        loss_rate = (self.total_sends - config.TOTAL_PACKETS) / self.total_sends * 100
         s = pd.Series(self.rtt_samples)
 
         log_event("丢包率: {:.2f}%  (总发送{}次 / 成功{}包)",
-                  loss_rate, self.total_sends, TOTAL_PACKETS)
+                  loss_rate, self.total_sends, config.TOTAL_PACKETS)
         log_event("最大 RTT: {:.2f} ms", s.max())
         log_event("最小 RTT: {:.2f} ms", s.min())
         log_event("平均 RTT: {:.2f} ms", s.mean())
@@ -334,8 +319,8 @@ class ReliableUDPClient:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="UDP GBN Client")
-    parser.add_argument("--server_ip", default="127.0.0.1", help="服务器 IP 地址")
-    parser.add_argument("--server_port", type=int, default=12345, help="服务器端口号")
+    parser.add_argument("--server_ip", default=config.DEFAULT_SERVER_IP, help="服务器 IP 地址")
+    parser.add_argument("--server_port", type=int, default=config.DEFAULT_PORT, help="服务器端口号")
     args = parser.parse_args()
 
     client = ReliableUDPClient(args.server_ip, args.server_port)
