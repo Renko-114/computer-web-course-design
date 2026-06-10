@@ -1,0 +1,8 @@
+The quick brown fox jumps over the lazy dog near the riverbank.
+A gentle breeze rustled through the autumn leaves as the sun began to set.
+Computer networks connect devices around the world enabling global communication.
+TCP provides reliable ordered delivery of data between applications.
+Socket programming allows developers to build custom network applications easily.
+Learning about protocols and packet structures is fundamental to understanding the Internet.
+Each layer of the network stack has its own responsibilities and challenges to overcome.
+The reverse function should handle text of any length correctly and efficiently.
