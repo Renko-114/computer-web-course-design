@@ -89,17 +89,19 @@ def main() -> None:
             sock.sendto(synack, client_addr)
             log_event("[{}] 发送 SYN-ACK", client_addr)
 
-            # 等待连接确认 ACK（5s 超时）
+            # 等待连接确认 ACK（5s 超时，忽略非 ACK 报文）
             sock.settimeout(5.0)
-            try:
-                data2, _ = sock.recvfrom(4096)
-                ack_flags, _, ack_num, _ = struct.unpack("!BIII", data2[:13])
-                if ack_flags & config.FLAG_ACK and ack_num == 1:
-                    log_event("[{}] 收到连接确认 ACK, 进入数据传输阶段", client_addr)
-            except socket.timeout:
-                log_event("[{}] 等待握手 ACK 超时，关闭连接", client_addr)
-                sock.close()
-                return
+            while True:
+                try:
+                    data2, _ = sock.recvfrom(4096)
+                    ack_flags, _, ack_num, _ = struct.unpack("!BIII", data2[:13])
+                    if ack_flags & config.FLAG_ACK and ack_num == 1:
+                        log_event("[{}] 收到连接确认 ACK, 进入数据传输阶段", client_addr)
+                        break
+                except socket.timeout:
+                    log_event("[{}] 等待握手 ACK 超时，关闭连接", client_addr)
+                    sock.close()
+                    return
             break
         else:
             log_event("[{}] StudentID={:#x} 验证失败，拒绝连接", client_addr, student_id)
@@ -144,7 +146,10 @@ def main() -> None:
             ack_pkt = pack_header(config.FLAG_ACK, 0, expected_seq, 0)
             sock.sendto(ack_pkt, client_addr)
 
-    log_event("全部 {} 个数据包接收完毕", total_pkts)
+    if expected_seq >= total_pkts:
+        log_event("全部 {} 个数据包接收完毕", total_pkts)
+    else:
+        log_event("数据传输中断，期望 seq={}，实际收到 {} 包", expected_seq, expected_seq)
 
     # ════════════════ Phase 3: 四次挥手 ════════════════
     sock.settimeout(10.0)

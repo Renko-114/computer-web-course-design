@@ -77,6 +77,9 @@ class ReliableUDPClient:
         self.last_ack = -1
         self.dup_ack_count = 0
 
+        # 线程安全锁（保护 base/next_seq/dup_ack/last_ack/send_times）
+        self._lock = threading.RLock()
+
         # 接收线程
         self.ack_queue = queue.Queue()
         self.running = True
@@ -93,16 +96,17 @@ class ReliableUDPClient:
 
                 if flags & config.FLAG_ACK:
                     self.ack_queue.put(ack)
-                    # 快速重传检测
-                    if ack == self.last_ack:
-                        self.dup_ack_count += 1
-                        if self.dup_ack_count == config.FAST_RETX_THRESHOLD:
-                            log_event("收到 {} 个重复 ACK={}，触发快速重传",
-                                      config.FAST_RETX_THRESHOLD, ack)
-                            self._fast_retransmit()
-                    else:
-                        self.last_ack = ack
-                        self.dup_ack_count = 0
+                    # 快速重传检测（线程安全）
+                    with self._lock:
+                        if ack == self.last_ack:
+                            self.dup_ack_count += 1
+                            if self.dup_ack_count == config.FAST_RETX_THRESHOLD:
+                                log_event("收到 {} 个重复 ACK={}，触发快速重传",
+                                          config.FAST_RETX_THRESHOLD, ack)
+                                self._fast_retransmit()
+                        else:
+                            self.last_ack = ack
+                            self.dup_ack_count = 0
             except socket.timeout:
                 continue
             except OSError:
@@ -117,22 +121,24 @@ class ReliableUDPClient:
 
     def _fast_retransmit(self):
         """快速重传：收到 3 个重复 ACK 时重传窗口内所有未确认包"""
-        if self.base >= config.TOTAL_PACKETS:
-            return
+        with self._lock:
+            if self.base >= config.TOTAL_PACKETS:
+                return
 
-        for i in range(self.base, min(self.base + config.WINDOW_SIZE, config.TOTAL_PACKETS)):
-            if not self.packets[i]['acked']:
-                pkt_info = self.packets[i]
-                pkt_info['sent_time'] = self._send_packet(
-                    config.FLAG_ACK, i, 0, pkt_info['data'])
-                pkt_info['retrans_count'] += 1
-                self.total_sends += 1
-                self.retransmit_count += 1
-                log_event("快速重传 第{}个 (seq={}, 大小:{}B)",
-                          i + 1, i, pkt_info['size'])
+            for i in range(self.base, min(self.base + config.WINDOW_SIZE, config.TOTAL_PACKETS)):
+                if not self.packets[i]['acked']:
+                    pkt_info = self.packets[i]
+                    pkt_info['sent_time'] = self._send_packet(
+                        config.FLAG_ACK, i, 0, pkt_info['data'])
+                    self.send_times[i] = pkt_info['sent_time']
+                    pkt_info['retrans_count'] += 1
+                    self.total_sends += 1
+                    self.retransmit_count += 1
+                    log_event("快速重传 第{}个 (seq={}, 大小:{}B)",
+                              i + 1, i, pkt_info['size'])
 
-        self.dup_ack_count = 0
-        self.next_seq = self.base
+            self.dup_ack_count = 0
+            self.next_seq = self.base
 
     def _establish_connection(self):
         """三次握手建立连接"""
@@ -162,10 +168,10 @@ class ReliableUDPClient:
         log_event("发送连接确认 ACK，进入数据传输阶段")
 
     def _terminate_connection(self):
-        """四次挥手终止连接"""
+        """四次挥手终止连接（最多重试 10 次）"""
         log_event("=== 四次挥手阶段 ===")
 
-        while True:
+        for _ in range(10):
             self._send_packet(config.FLAG_FIN, config.TOTAL_PACKETS, 0)
             log_event("发送 FIN")
 
@@ -237,32 +243,34 @@ class ReliableUDPClient:
             # 等待 ACK
             try:
                 ack_num = self.ack_queue.get(timeout=self.rto)
-                if ack_num > self.base:
-                    old_base = self.base
-                    self.base = ack_num
+                with self._lock:
+                    if ack_num > self.base:
+                        old_base = self.base
+                        self.base = ack_num
 
-                    # 计算 RTT（对刚被确认的最老包）
-                    if old_base < config.TOTAL_PACKETS and old_base in self.send_times:
-                        rtt_ms = (time.time() - self.send_times[old_base]) * 1000
-                        self.rtt_samples.append(rtt_ms)
+                        # 计算 RTT（对刚被确认的最老包）
+                        if old_base < config.TOTAL_PACKETS and old_base in self.send_times:
+                            rtt_ms = (time.time() - self.send_times[old_base]) * 1000
+                            self.rtt_samples.append(rtt_ms)
 
-                    # 标记已确认的包
-                    for s in range(old_base, self.base):
-                        if s < config.TOTAL_PACKETS:
-                            self.packets[s]['acked'] = True
-                            byte_s = sum(self.packet_sizes[:s])
-                            byte_e = byte_s + self.packet_sizes[s] - 1
-                            pkt_rtt = (time.time() - self.send_times[s]) * 1000
-                            log_event("第{}个（第{}~{}字节）server 端已经收到，RTT 是 {:.2f} ms",
-                                      s + 1, byte_s, byte_e, pkt_rtt)
+                        # 标记已确认的包
+                        for s in range(old_base, self.base):
+                            if s < config.TOTAL_PACKETS:
+                                self.packets[s]['acked'] = True
+                                byte_s = sum(self.packet_sizes[:s])
+                                byte_e = byte_s + self.packet_sizes[s] - 1
+                                pkt_rtt = (time.time() - self.send_times[s]) * 1000
+                                log_event("第{}个（第{}~{}字节）server 端已经收到，RTT 是 {:.2f} ms",
+                                          s + 1, byte_s, byte_e, pkt_rtt)
 
-                    # 清理已确认包的发送时间
-                    self.send_times = {k: v for k, v in self.send_times.items() if k >= self.base}
+                        # 清理已确认包的发送时间
+                        self.send_times = {k: v for k, v in self.send_times.items() if k >= self.base}
+                        self.next_seq = self.base
 
-                    # 自适应 RTO
-                    if self.rtt_samples:
-                        avg_rtt = sum(self.rtt_samples[-5:]) / min(len(self.rtt_samples), 5)
-                        self.rto = max(0.05, min(3.0, avg_rtt * 5 / 1000))
+                        # 自适应 RTO
+                        if self.rtt_samples:
+                            avg_rtt = sum(self.rtt_samples[-5:]) / min(len(self.rtt_samples), 5)
+                            self.rto = max(0.05, min(3.0, avg_rtt * 5 / 1000))
 
             except queue.Empty:
                 # 超时重传整个窗口
