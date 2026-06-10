@@ -69,7 +69,7 @@ class TestSREndToEnd:
                     break
                 if len(data) < 13:
                     continue
-                flags, seq, ack, dlen = struct.unpack("!BIII", data[:13])
+                flags, seq, ack, dlen = unpack_header(data[:13])
                 if not (flags & config.FLAG_ACK):
                     continue
                 if rng.random() < config.DROP_RATE / 2:
@@ -86,7 +86,7 @@ class TestSREndToEnd:
             sock.settimeout(3.0)
             try:
                 data, _ = sock.recvfrom(4096)
-                flags, _, _, _ = struct.unpack("!BIII", data[:13])
+                flags, _, _, _ = unpack_header(data[:13])
                 if flags & config.FLAG_FIN:
                     sock.sendto(pack_header(config.FLAG_FIN, 0, 0, 0), addr)
             except socket.timeout:

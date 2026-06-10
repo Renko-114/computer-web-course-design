@@ -20,3 +20,13 @@ def log_event(log_path: str, fmt: str, *args) -> None:
 def pack_header(flags: int, seq: int = 0, ack: int = 0, length: int = 0) -> bytes:
     """打包统一 13B 报文头 [1B Flags][4B Seq][4B Ack][4B Length]"""
     return struct.pack("!BIII", flags, seq, ack, length)
+
+
+def unpack_header(data: bytes):
+    """解包 13B 报文头，返回 (flags, seq, ack, length)；不合法返回 None"""
+    if len(data) < 13:
+        return None
+    try:
+        return struct.unpack("!BIII", data[:13])
+    except struct.error:
+        return None

@@ -21,7 +21,7 @@ import argparse
 
 import pandas as pd
 
-from common import log_event, pack_header
+from common import log_event, pack_header, unpack_header
 
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_log.txt")
 
@@ -65,7 +65,7 @@ class SRClient:
             try:
                 data, _ = self.sock.recvfrom(4096)
                 if len(data) >= 13:
-                    flags, seq, ack, _ = struct.unpack("!BIII", data[:13])
+                    flags, seq, ack, _ = unpack_header(data[:13])
                     if (flags & config.FLAG_SYN) and (flags & config.FLAG_ACK) and ack == 1:
                         log_event(LOG_PATH, "收到 SYN-ACK，连接建立中...")
                         break
@@ -83,7 +83,7 @@ class SRClient:
             try:
                 data, _ = self.sock.recvfrom(4096)
                 if len(data) >= 13:
-                    flags, _, _, _ = struct.unpack("!BIII", data[:13])
+                    flags, _, _, _ = unpack_header(data[:13])
                     if flags & config.FLAG_FIN:
                         log_event(LOG_PATH, "收到服务器 FIN，连接关闭")
                         break
@@ -136,7 +136,7 @@ class SRClient:
             try:
                 data, _ = self.sock.recvfrom(4096)
                 if len(data) >= 13:
-                    flags, _, ack_seq, _ = struct.unpack("!BIII", data[:13])
+                    flags, _, ack_seq, _ = unpack_header(data[:13])
                     if flags & config.FLAG_ACK:
                         seq = ack_seq  # SR: ACK 字段携带被确认的 seq
                         if (self.base <= seq < min(self.base + config.WINDOW_SIZE,

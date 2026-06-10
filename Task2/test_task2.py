@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
-from common import pack_header
+from common import pack_header, unpack_header
 from udpclient import compute_student_id, ReliableUDPClient
 from udpserver import verify_student_id
 
@@ -39,7 +39,7 @@ class TestProtocolHeader:
     def test_pack_header_syn(self):
         pkt = pack_header(config.FLAG_SYN, 0, 0, 4)
         assert len(pkt) == config.HEADER_LEN
-        flags, seq, ack, length = struct.unpack("!BIII", pkt)
+        flags, seq, ack, length = unpack_header(pkt)
         assert flags == config.FLAG_SYN
         assert seq == 0
         assert ack == 0
@@ -47,20 +47,20 @@ class TestProtocolHeader:
 
     def test_pack_header_synack(self):
         pkt = pack_header(config.FLAG_SYN | config.FLAG_ACK, 0, 1, 0)
-        flags, seq, ack, length = struct.unpack("!BIII", pkt)
+        flags, seq, ack, length = unpack_header(pkt)
         assert flags == 0x03
         assert ack == 1
 
     def test_pack_header_data(self):
         pkt = pack_header(config.FLAG_ACK, 15, 0, 60)
-        flags, seq, ack, length = struct.unpack("!BIII", pkt)
+        flags, seq, ack, length = unpack_header(pkt)
         assert flags == config.FLAG_ACK
         assert seq == 15
         assert length == 60
 
     def test_pack_header_fin(self):
         pkt = pack_header(config.FLAG_FIN, 30, 0, 0)
-        flags, _, _, _ = struct.unpack("!BIII", pkt)
+        flags, _, _, _ = unpack_header(pkt)
         assert flags == config.FLAG_FIN
 
     def test_flags_mutually_exclusive_bits(self):
@@ -103,7 +103,7 @@ class TestReliableUDPClientInit:
         assert c.total_sends == 0
         assert c.retransmit_count == 0
         assert c.rtt_samples == []
-        assert c.send_times == {}
+        assert c.send_times == [0.0] * config.TOTAL_PACKETS
         assert c.last_ack == -1
         assert c.dup_ack_count == 0
         assert hasattr(c, "_lock")
@@ -141,7 +141,7 @@ class TestUDPEndToEnd:
 
             # Phase 1: Handshake
             data, addr = sock.recvfrom(4096)
-            flags, _, _, _ = struct.unpack("!BIII", data[:13])
+            flags, _, _, _ = unpack_header(data[:13])
             assert flags & config.FLAG_SYN
 
             synack = pack_header(config.FLAG_SYN | config.FLAG_ACK, 0, 1, 0)
@@ -150,7 +150,7 @@ class TestUDPEndToEnd:
             # Wait for ACK
             sock.settimeout(3.0)
             data2, _ = sock.recvfrom(4096)
-            flags2, _, ack2, _ = struct.unpack("!BIII", data2[:13])
+            flags2, _, ack2, _ = unpack_header(data2[:13])
             assert flags2 & config.FLAG_ACK
 
             # Phase 2: GBN data transfer
@@ -168,7 +168,7 @@ class TestUDPEndToEnd:
 
                 if len(data) < 13:
                     continue
-                flags, seq, ack, dlen = struct.unpack("!BIII", data[:13])
+                flags, seq, ack, dlen = unpack_header(data[:13])
 
                 if not (flags & config.FLAG_ACK):
                     continue
@@ -186,7 +186,7 @@ class TestUDPEndToEnd:
             sock.settimeout(3.0)
             try:
                 data, _ = sock.recvfrom(4096)
-                flags, _, _, _ = struct.unpack("!BIII", data[:13])
+                flags, _, _, _ = unpack_header(data[:13])
                 if flags & config.FLAG_FIN:
                     fin_pkt = pack_header(config.FLAG_FIN, 0, 0, 0)
                     sock.sendto(fin_pkt, addr)

@@ -104,7 +104,7 @@ def main() -> None:
         n_blocks,
     )
 
-    # 打印分块明细（便于验收对答）
+    # 打印分块明细
     pos = 0
     for i, sz in enumerate(chunk_sizes):
         log_event(LOG_PATH, "  块{}: offset={}, 长度={}B", i + 1, pos, sz)

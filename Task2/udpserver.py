@@ -22,7 +22,7 @@ import random
 import os
 import argparse
 
-from common import log_event, pack_header
+from common import log_event, pack_header, unpack_header
 
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_log.txt")
 
@@ -52,10 +52,9 @@ def main() -> None:
     total_pkts = 0
     while True:
         data, client_addr = sock.recvfrom(4096)
-        if len(data) < 13:
+        flags, seq, ack, length = unpack_header(data[:13])
+        if flags is None:
             continue
-
-        flags, seq, ack, length = struct.unpack("!BIII", data[:13])
         payload = data[13:]
 
         if not (flags & config.FLAG_SYN):
@@ -84,7 +83,7 @@ def main() -> None:
             while True:
                 try:
                     data2, _ = sock.recvfrom(4096)
-                    ack_flags, _, ack_num, _ = struct.unpack("!BIII", data2[:13])
+                    ack_flags, _, ack_num, _ = unpack_header(data2[:13])
                     if ack_flags & config.FLAG_ACK and ack_num == 1:
                         log_event(LOG_PATH, 
                             "[{}] 收到连接确认 ACK, 进入数据传输阶段", client_addr
@@ -112,10 +111,9 @@ def main() -> None:
             log_event(LOG_PATH, "长时间未收到数据，Server 退出")
             break
 
-        if len(data) < 13:
+        flags, seq, ack, data_len = unpack_header(data[:13])
+        if flags is None:
             continue
-
-        flags, seq, ack, data_len = struct.unpack("!BIII", data[:13])
         payload = data[13 : 13 + data_len]
 
         if not (flags & config.FLAG_ACK):
@@ -161,9 +159,9 @@ def main() -> None:
     while True:
         try:
             data, _ = sock.recvfrom(4096)
-            if len(data) < 13:
+            flags, _, _, _ = unpack_header(data[:13])
+            if flags is None:
                 continue
-            flags, _, _, _ = struct.unpack("!BIII", data[:13])
             if flags & config.FLAG_FIN:
                 log_event(LOG_PATH, "收到 FIN，发送 FIN 确认关闭")
                 fin_pkt = pack_header(config.FLAG_FIN, 0, 0, 0)
