@@ -31,7 +31,12 @@ def handle_client(conn: socket.socket, addr: tuple) -> None:
         header = recv_exact(conn, config.HEADER_LEN)  # 1B Type + 4B N
         msg_type, n_blocks = struct.unpack("!BI", header)
         if msg_type != config.TYPE_INIT:
-            log_event(LOG_PATH, "[{}] 期望 Initialization 报文，收到 Type={}", client_tag, msg_type)
+            log_event(
+                LOG_PATH,
+                "[{}] 期望 Initialization 报文，收到 Type={}",
+                client_tag,
+                msg_type,
+            )
             conn.close()
             return
         log_event(LOG_PATH, "[{}] 收到 Initialization: N={}", client_tag, n_blocks)
@@ -45,7 +50,12 @@ def handle_client(conn: socket.socket, addr: tuple) -> None:
             header = recv_exact(conn, config.HEADER_LEN)  # 1B Type + 4B Length
             msg_type, data_len = struct.unpack("!BI", header)
             if msg_type != config.TYPE_REQUEST:
-                log_event(LOG_PATH, "[{}] 期望 reverseRequest，收到 Type={}", client_tag, msg_type)
+                log_event(
+                    LOG_PATH,
+                    "[{}] 期望 reverseRequest，收到 Type={}",
+                    client_tag,
+                    msg_type,
+                )
                 conn.close()
                 return
 
@@ -54,10 +64,19 @@ def handle_client(conn: socket.socket, addr: tuple) -> None:
             reversed_text = text[::-1]
             reversed_data = reversed_text.encode("utf-8")
 
-            log_event(LOG_PATH, "[{}] 第{}块: 收到 {}B, 反转后发回", client_tag, i + 1, data_len)
+            log_event(
+                LOG_PATH,
+                "[{}] 第{}块: 收到 {}B, 反转后发回",
+                client_tag,
+                i + 1,
+                data_len,
+            )
 
             # 发送 reverseAnswer
-            answer = struct.pack("!BI", config.TYPE_ANSWER, len(reversed_data)) + reversed_data
+            answer = (
+                struct.pack("!BI", config.TYPE_ANSWER, len(reversed_data))
+                + reversed_data
+            )
             conn.sendall(answer)
 
         log_event(LOG_PATH, "[{}] 全部 {} 块处理完成，连接关闭", client_tag, n_blocks)
@@ -73,7 +92,9 @@ def handle_client(conn: socket.socket, addr: tuple) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="TCP Reverse Server")
     parser.add_argument("--host", default=config.DEFAULT_HOST, help="服务器监听地址")
-    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT, help="服务器监听端口")
+    parser.add_argument(
+        "--port", type=int, default=config.DEFAULT_PORT, help="服务器监听端口"
+    )
     args = parser.parse_args()
 
     # 清空旧日志

@@ -18,6 +18,6 @@ TYPE_REQUEST = 3
 TYPE_ANSWER = 4
 
 # 协议字段长度 (字节, Big-Endian)
-TYPE_LEN = 1   # Type: unsigned char (!B)
-N_LEN = 4      # N/Length: unsigned int (!I)
+TYPE_LEN = 1  # Type: unsigned char (!B)
+N_LEN = 4  # N/Length: unsigned int (!I)
 HEADER_LEN = TYPE_LEN + N_LEN  # 5

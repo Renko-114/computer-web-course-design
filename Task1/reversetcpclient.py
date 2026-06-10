@@ -50,12 +50,27 @@ def split_file(data: bytes, lmin: int, lmax: int, seed: int) -> list:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="TCP Reverse Client")
-    parser.add_argument("--server_ip", default=config.DEFAULT_SERVER_IP, help="服务器 IP 地址")
-    parser.add_argument("--server_port", type=int, default=config.DEFAULT_PORT, help="服务器端口号")
-    parser.add_argument("--file_path", default=config.DEFAULT_FILE, help="待发送的 ASCII 文本文件")
-    parser.add_argument("--lmin", type=int, default=config.DEFAULT_LMIN, help="每块最小字节数")
-    parser.add_argument("--lmax", type=int, default=config.DEFAULT_LMAX, help="每块最大字节数")
-    parser.add_argument("--chunk_seed", type=int, default=config.DEFAULT_CHUNK_SEED, help="随机分块种子（用于复现）")
+    parser.add_argument(
+        "--server_ip", default=config.DEFAULT_SERVER_IP, help="服务器 IP 地址"
+    )
+    parser.add_argument(
+        "--server_port", type=int, default=config.DEFAULT_PORT, help="服务器端口号"
+    )
+    parser.add_argument(
+        "--file_path", default=config.DEFAULT_FILE, help="待发送的 ASCII 文本文件"
+    )
+    parser.add_argument(
+        "--lmin", type=int, default=config.DEFAULT_LMIN, help="每块最小字节数"
+    )
+    parser.add_argument(
+        "--lmax", type=int, default=config.DEFAULT_LMAX, help="每块最大字节数"
+    )
+    parser.add_argument(
+        "--chunk_seed",
+        type=int,
+        default=config.DEFAULT_CHUNK_SEED,
+        help="随机分块种子（用于复现）",
+    )
     args = parser.parse_args()
 
     server_ip = args.server_ip
@@ -78,8 +93,16 @@ def main() -> None:
     sock.connect((server_ip, server_port))
 
     log_event(LOG_PATH, "连接 server {}:{}", server_ip, server_port)
-    log_event(LOG_PATH, "文件 {} ({}B), Lmin={}, Lmax={}, seed={}, 共 {} 块",
-              file_path, len(file_bytes), lmin, lmax, chunk_seed, n_blocks)
+    log_event(
+        LOG_PATH,
+        "文件 {} ({}B), Lmin={}, Lmax={}, seed={}, 共 {} 块",
+        file_path,
+        len(file_bytes),
+        lmin,
+        lmax,
+        chunk_seed,
+        n_blocks,
+    )
 
     # 打印分块明细（便于验收对答）
     pos = 0
@@ -105,7 +128,7 @@ def main() -> None:
     reversed_chunks = []
     pos = 0
     for i, sz in enumerate(chunk_sizes):
-        chunk_data = file_bytes[pos:pos + sz]
+        chunk_data = file_bytes[pos : pos + sz]
         pos += sz
 
         # 发送 reverseRequest: Type + Length + Data
@@ -125,7 +148,13 @@ def main() -> None:
         reversed_text = ans_data.decode("utf-8")
         reversed_chunks.append(reversed_text)
 
-        log_event(LOG_PATH, "收到 reverseAnswer 第{}块: {}B → \"{}\"", i + 1, ans_len, reversed_text)
+        log_event(
+            LOG_PATH,
+            '收到 reverseAnswer 第{}块: {}B → "{}"',
+            i + 1,
+            ans_len,
+            reversed_text,
+        )
         print(f"第{i + 1}块: {reversed_text}")
 
     sock.close()

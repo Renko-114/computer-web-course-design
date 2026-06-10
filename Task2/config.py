@@ -19,11 +19,11 @@ STUDENT_ID_MASK = 0x5A3C
 HEADER_LEN = 13
 
 # GBN 可调参数
-TOTAL_PACKETS = 30       # 总发包数
-PACKET_SIZE_MIN = 40     # 每包最小字节数
-PACKET_SIZE_MAX = 80     # 每包最大字节数
-WINDOW_SIZE = 5          # 发送窗口（包数）
-INITIAL_TIMEOUT = 0.3    # 初始超时 (秒)
+TOTAL_PACKETS = 30  # 总发包数
+PACKET_SIZE_MIN = 40  # 每包最小字节数
+PACKET_SIZE_MAX = 80  # 每包最大字节数
+WINDOW_SIZE = 5  # 发送窗口（包数）
+INITIAL_TIMEOUT = 0.3  # 初始超时 (秒)
 
 # 快速重传阈值（重复 ACK 次数）
 FAST_RETX_THRESHOLD = 3

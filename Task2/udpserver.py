@@ -52,7 +52,9 @@ def pack_header(flags: int, seq: int = 0, ack: int = 0, length: int = 0) -> byte
 def main() -> None:
     parser = argparse.ArgumentParser(description="UDP GBN Server")
     parser.add_argument("--host", default=config.DEFAULT_HOST, help="服务器监听地址")
-    parser.add_argument("--port", type=int, default=config.DEFAULT_PORT, help="服务器监听端口")
+    parser.add_argument(
+        "--port", type=int, default=config.DEFAULT_PORT, help="服务器监听端口"
+    )
     args = parser.parse_args()
 
     with open(LOG_PATH, "w", encoding="utf-8") as f:
@@ -81,8 +83,12 @@ def main() -> None:
         student_id, total_pkts = struct.unpack("!HH", payload[:4])
 
         if verify_student_id(student_id):
-            log_event("[{}] 收到 SYN, StudentID={:#x} 验证通过, 共{}包",
-                      client_addr, student_id, total_pkts)
+            log_event(
+                "[{}] 收到 SYN, StudentID={:#x} 验证通过, 共{}包",
+                client_addr,
+                student_id,
+                total_pkts,
+            )
 
             # 发送 SYN-ACK
             synack = pack_header(config.FLAG_SYN | config.FLAG_ACK, 0, 1, 0)
@@ -96,7 +102,9 @@ def main() -> None:
                     data2, _ = sock.recvfrom(4096)
                     ack_flags, _, ack_num, _ = struct.unpack("!BIII", data2[:13])
                     if ack_flags & config.FLAG_ACK and ack_num == 1:
-                        log_event("[{}] 收到连接确认 ACK, 进入数据传输阶段", client_addr)
+                        log_event(
+                            "[{}] 收到连接确认 ACK, 进入数据传输阶段", client_addr
+                        )
                         break
                 except socket.timeout:
                     log_event("[{}] 等待握手 ACK 超时，关闭连接", client_addr)
@@ -104,7 +112,9 @@ def main() -> None:
                     return
             break
         else:
-            log_event("[{}] StudentID={:#x} 验证失败，拒绝连接", client_addr, student_id)
+            log_event(
+                "[{}] StudentID={:#x} 验证失败，拒绝连接", client_addr, student_id
+            )
 
     # ════════════════ Phase 2: 数据传输（GBN 接收端） ════════════════
     expected_seq = 0
@@ -122,7 +132,7 @@ def main() -> None:
             continue
 
         flags, seq, ack, data_len = struct.unpack("!BIII", data[:13])
-        payload = data[13:13 + data_len]
+        payload = data[13 : 13 + data_len]
 
         if not (flags & config.FLAG_ACK):
             continue
@@ -134,14 +144,23 @@ def main() -> None:
 
         if seq == expected_seq:
             expected_seq += 1
-            log_event("接收 第{}个数据包 seq={} ({}B), 发送累积ACK={}",
-                      seq + 1, seq, data_len, expected_seq)
+            log_event(
+                "接收 第{}个数据包 seq={} ({}B), 发送累积ACK={}",
+                seq + 1,
+                seq,
+                data_len,
+                expected_seq,
+            )
 
             ack_pkt = pack_header(config.FLAG_ACK, 0, expected_seq, 0)
             sock.sendto(ack_pkt, client_addr)
         else:
-            log_event("丢弃乱序包 seq={} (期望 seq={}), 重发 ACK={}",
-                      seq + 1, expected_seq + 1, expected_seq)
+            log_event(
+                "丢弃乱序包 seq={} (期望 seq={}), 重发 ACK={}",
+                seq + 1,
+                expected_seq + 1,
+                expected_seq,
+            )
 
             ack_pkt = pack_header(config.FLAG_ACK, 0, expected_seq, 0)
             sock.sendto(ack_pkt, client_addr)
@@ -149,7 +168,9 @@ def main() -> None:
     if expected_seq >= total_pkts:
         log_event("全部 {} 个数据包接收完毕", total_pkts)
     else:
-        log_event("数据传输中断，期望 seq={}，实际收到 {} 包", expected_seq, expected_seq)
+        log_event(
+            "数据传输中断，期望 seq={}，实际收到 {} 包", expected_seq, expected_seq
+        )
 
     # ════════════════ Phase 3: 四次挥手 ════════════════
     sock.settimeout(10.0)
