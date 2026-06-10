@@ -5,6 +5,7 @@
 ## 项目结构
 
 - `config.py` — 网络配置、标志位常量、GBN 可调参数
+- `common.py` — 公共模块（线程安全日志、协议头打包）
 - `udpserver.py` — UDP 服务端（三次握手 + 累积确认 + 丢包模拟 + 四次挥手）
 - `udpclient.py` — UDP 客户端（GBN 滑动窗口 + 超时重传 + 快速重传 + 统计）
 - `requirements.txt` — Python 依赖

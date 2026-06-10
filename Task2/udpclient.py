@@ -24,27 +24,12 @@ import time
 import threading
 import queue
 import argparse
-from datetime import datetime
 
 import pandas as pd
 
+from common import log_event, pack_header
+
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_log.txt")
-_LOG_LOCK = threading.Lock()
-
-
-def log_event(fmt: str, *args) -> None:
-    """写日志（线程安全）"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    line = f"[{timestamp}] {fmt.format(*args)}"
-    with _LOG_LOCK:
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    print(line)
-
-
-def pack_header(flags: int, seq: int = 0, ack: int = 0, length: int = 0) -> bytes:
-    """打包统一 13B 报文头"""
-    return struct.pack("!BIII", flags, seq, ack, length)
 
 
 def compute_student_id(last4: int) -> int:
@@ -101,7 +86,7 @@ class ReliableUDPClient:
                         if ack == self.last_ack:
                             self.dup_ack_count += 1
                             if self.dup_ack_count == config.FAST_RETX_THRESHOLD:
-                                log_event(
+                                log_event(LOG_PATH, 
                                     "收到 {} 个重复 ACK={}，触发快速重传",
                                     config.FAST_RETX_THRESHOLD,
                                     ack,
@@ -146,7 +131,7 @@ class ReliableUDPClient:
                     pkt_info["retrans_count"] += 1
                     self.total_sends += 1
                     self.retransmit_count += 1
-                    log_event(
+                    log_event(LOG_PATH, 
                         "快速重传 第{}个 (seq={}, 大小:{}B)", i + 1, i, pkt_info["size"]
                     )
 
@@ -155,7 +140,7 @@ class ReliableUDPClient:
 
     def _establish_connection(self):
         """三次握手建立连接"""
-        log_event("=== 三次握手阶段 ===")
+        log_event(LOG_PATH, "=== 三次握手阶段 ===")
 
         student_id = compute_student_id(config.STUDENT_ID_LAST4)
 
@@ -163,7 +148,7 @@ class ReliableUDPClient:
             # SYN payload: StudentID(2B) + TotalPackets(2B)
             syn_data = struct.pack("!HH", student_id, config.TOTAL_PACKETS)
             self._send_packet(config.FLAG_SYN, 0, 0, syn_data)
-            log_event(
+            log_event(LOG_PATH, 
                 "发送 SYN: StudentID={:#x}, TotalPackets={}",
                 student_id,
                 config.TOTAL_PACKETS,
@@ -175,22 +160,22 @@ class ReliableUDPClient:
                     continue
                 flags, seq, ack, _ = struct.unpack("!BIII", data[:13])
                 if (flags & config.FLAG_SYN) and (flags & config.FLAG_ACK) and ack == 1:
-                    log_event("收到 SYN-ACK，连接建立中...")
+                    log_event(LOG_PATH, "收到 SYN-ACK，连接建立中...")
                     break
             except socket.timeout:
                 continue
 
         # 发送连接确认 ACK
         self._send_packet(config.FLAG_ACK, 1, 1)
-        log_event("发送连接确认 ACK，进入数据传输阶段")
+        log_event(LOG_PATH, "发送连接确认 ACK，进入数据传输阶段")
 
     def _terminate_connection(self):
         """四次挥手终止连接（最多重试 10 次）"""
-        log_event("=== 四次挥手阶段 ===")
+        log_event(LOG_PATH, "=== 四次挥手阶段 ===")
 
         for _ in range(10):
             self._send_packet(config.FLAG_FIN, config.TOTAL_PACKETS, 0)
-            log_event("发送 FIN")
+            log_event(LOG_PATH, "发送 FIN")
 
             try:
                 data, _ = self.sock.recvfrom(4096)
@@ -198,7 +183,7 @@ class ReliableUDPClient:
                     continue
                 flags, _, _, _ = struct.unpack("!BIII", data[:13])
                 if flags & config.FLAG_FIN:
-                    log_event("收到服务器 FIN，连接关闭")
+                    log_event(LOG_PATH, "收到服务器 FIN，连接关闭")
                     break
             except socket.timeout:
                 continue
@@ -210,7 +195,7 @@ class ReliableUDPClient:
 
     def _send_data(self):
         """GBN 数据传输"""
-        log_event("=== 数据传输阶段 ===")
+        log_event(LOG_PATH, "=== 数据传输阶段 ===")
 
         # 生成测试数据
         base_text = (
@@ -259,7 +244,7 @@ class ReliableUDPClient:
                     byte_s = sum(self.packet_sizes[: self.next_seq])
                     byte_e = byte_s + pkt["size"] - 1
                     tag = "重传" if pkt["retrans_count"] > 1 else ""
-                    log_event(
+                    log_event(LOG_PATH, 
                         "{}第{}个（第{}~{}字节）client 端已经发送",
                         tag,
                         self.next_seq + 1,
@@ -292,7 +277,7 @@ class ReliableUDPClient:
                                 byte_s = sum(self.packet_sizes[:s])
                                 byte_e = byte_s + self.packet_sizes[s] - 1
                                 pkt_rtt = (time.time() - self.send_times[s]) * 1000
-                                log_event(
+                                log_event(LOG_PATH, 
                                     "第{}个（第{}~{}字节）server 端已经收到，RTT 是 {:.2f} ms",
                                     s + 1,
                                     byte_s,
@@ -316,7 +301,7 @@ class ReliableUDPClient:
             except queue.Empty:
                 # 超时重传整个窗口
                 if self.base < config.TOTAL_PACKETS:
-                    log_event(
+                    log_event(LOG_PATH, 
                         "超时 {:.0f}ms（RTO={:.0f}ms），重传窗口 seq={}..{}",
                         self.rto * 1000,
                         self.rto * 1000,
@@ -333,26 +318,26 @@ class ReliableUDPClient:
 
     def _print_stats(self):
         """打印传输统计"""
-        log_event("=== 汇总统计 ===")
+        log_event(LOG_PATH, "=== 汇总统计 ===")
 
         if not self.rtt_samples:
-            log_event("无 RTT 样本")
+            log_event(LOG_PATH, "无 RTT 样本")
             return
 
         loss_rate = (self.total_sends - config.TOTAL_PACKETS) / self.total_sends * 100
         s = pd.Series(self.rtt_samples)
 
-        log_event(
+        log_event(LOG_PATH, 
             "丢包率: {:.2f}%  (总发送{}次 / 成功{}包)",
             loss_rate,
             self.total_sends,
             config.TOTAL_PACKETS,
         )
-        log_event("最大 RTT: {:.2f} ms", s.max())
-        log_event("最小 RTT: {:.2f} ms", s.min())
-        log_event("平均 RTT: {:.2f} ms", s.mean())
-        log_event("RTT 标准差: {:.2f} ms", s.std())
-        log_event("重传次数: {}", self.retransmit_count)
+        log_event(LOG_PATH, "最大 RTT: {:.2f} ms", s.max())
+        log_event(LOG_PATH, "最小 RTT: {:.2f} ms", s.min())
+        log_event(LOG_PATH, "平均 RTT: {:.2f} ms", s.mean())
+        log_event(LOG_PATH, "RTT 标准差: {:.2f} ms", s.std())
+        log_event(LOG_PATH, "重传次数: {}", self.retransmit_count)
 
         print(f"\n{'=' * 50}")
         print(f"丢包率: {loss_rate:.2f}%")
