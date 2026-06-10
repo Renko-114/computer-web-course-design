@@ -19,7 +19,6 @@ import config
 import socket
 import struct
 import random
-import sys
 import os
 import argparse
 import threading
@@ -90,11 +89,17 @@ def main() -> None:
             sock.sendto(synack, client_addr)
             log_event("[{}] 发送 SYN-ACK", client_addr)
 
-            # 等待连接确认 ACK
-            data2, _ = sock.recvfrom(4096)
-            ack_flags, _, ack_num, _ = struct.unpack("!BIII", data2[:13])
-            if ack_flags & config.FLAG_ACK and ack_num == 1:
-                log_event("[{}] 收到连接确认 ACK, 进入数据传输阶段", client_addr)
+            # 等待连接确认 ACK（5s 超时）
+            sock.settimeout(5.0)
+            try:
+                data2, _ = sock.recvfrom(4096)
+                ack_flags, _, ack_num, _ = struct.unpack("!BIII", data2[:13])
+                if ack_flags & config.FLAG_ACK and ack_num == 1:
+                    log_event("[{}] 收到连接确认 ACK, 进入数据传输阶段", client_addr)
+            except socket.timeout:
+                log_event("[{}] 等待握手 ACK 超时，关闭连接", client_addr)
+                sock.close()
+                return
             break
         else:
             log_event("[{}] StudentID={:#x} 验证失败，拒绝连接", client_addr, student_id)
@@ -102,10 +107,10 @@ def main() -> None:
     # ════════════════ Phase 2: 数据传输（GBN 接收端） ════════════════
     expected_seq = 0
     rng = random.Random()
+    sock.settimeout(10.0)  # 10s 无数据则超时退出
 
     while expected_seq < total_pkts:
         try:
-            sock.settimeout(10.0)
             data, _ = sock.recvfrom(4096)
         except socket.timeout:
             log_event("长时间未收到数据，Server 退出")

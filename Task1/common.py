@@ -6,8 +6,6 @@ import socket
 import threading
 from datetime import datetime
 
-import config
-
 # 日志锁，保证多线程写日志安全
 _LOG_LOCK = threading.Lock()
 

@@ -12,7 +12,6 @@ TCP Reverse Server — 接收客户端分块文本，反转后返回。
 import socket
 import struct
 import threading
-import sys
 import os
 import argparse
 
@@ -43,7 +42,7 @@ def handle_client(conn: socket.socket, addr: tuple) -> None:
 
         # 3) 逐块处理 reverseRequest
         for i in range(n_blocks):
-            header = recv_exact(conn, 5)  # 1B Type + 4B Length
+            header = recv_exact(conn, config.HEADER_LEN)  # 1B Type + 4B Length
             msg_type, data_len = struct.unpack("!BI", header)
             if msg_type != config.TYPE_REQUEST:
                 log_event(LOG_PATH, "[{}] 期望 reverseRequest，收到 Type={}", client_tag, msg_type)

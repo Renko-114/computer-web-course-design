@@ -19,7 +19,6 @@ import config
 import socket
 import struct
 import random
-import sys
 import os
 import time
 import threading
@@ -30,14 +29,16 @@ from datetime import datetime
 import pandas as pd
 
 LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_log.txt")
+_LOG_LOCK = threading.Lock()
 
 
 def log_event(fmt: str, *args) -> None:
-    """写日志"""
+    """写日志（线程安全）"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     line = f"[{timestamp}] {fmt.format(*args)}"
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    with _LOG_LOCK:
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
     print(line)
 
 
@@ -251,9 +252,9 @@ class ReliableUDPClient:
                             self.packets[s]['acked'] = True
                             byte_s = sum(self.packet_sizes[:s])
                             byte_e = byte_s + self.packet_sizes[s] - 1
+                            pkt_rtt = (time.time() - self.send_times[s]) * 1000
                             log_event("第{}个（第{}~{}字节）server 端已经收到，RTT 是 {:.2f} ms",
-                                      s + 1, byte_s, byte_e,
-                                      (time.time() - self.send_times.get(old_base, time.time())) * 1000)
+                                      s + 1, byte_s, byte_e, pkt_rtt)
 
                     # 清理已确认包的发送时间
                     self.send_times = {k: v for k, v in self.send_times.items() if k >= self.base}
