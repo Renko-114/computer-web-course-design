@@ -88,7 +88,17 @@ class TestSREndToEnd:
                 data, _ = sock.recvfrom(4096)
                 flags, _, _, _ = unpack_header(data[:13])
                 if flags & config.FLAG_FIN:
+                    # Step 2: ACK
+                    ack_pkt = pack_header(config.FLAG_ACK, 0, 0, 0)
+                    sock.sendto(ack_pkt, addr)
+                    # Step 3: FIN
                     sock.sendto(pack_header(config.FLAG_FIN, 0, 0, 0), addr)
+                    # Step 4: Wait for client's final ACK
+                    sock.settimeout(1.0)
+                    try:
+                        data2, _ = sock.recvfrom(4096)
+                    except socket.timeout:
+                        pass
             except socket.timeout:
                 pass
             sock.close()

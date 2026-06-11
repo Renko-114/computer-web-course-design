@@ -100,10 +100,7 @@ class TestReliableUDPClientInit:
         c = ReliableUDPClient("127.0.0.1", 12345)
         assert c.base == 0
         assert c.next_seq == 0
-        assert c.total_sends == 0
-        assert c.retransmit_count == 0
         assert c.rtt_samples == []
-        assert c.send_times == [0.0] * config.TOTAL_PACKETS
         assert c.last_ack == -1
         assert c.dup_ack_count == 0
         assert hasattr(c, "_lock")
@@ -182,14 +179,24 @@ class TestUDPEndToEnd:
                     ack_pkt = pack_header(config.FLAG_ACK, 0, expected_seq, 0)
                     sock.sendto(ack_pkt, addr)
 
-            # Phase 3: FIN
+            # Phase 3: FIN (4-step handshake)
             sock.settimeout(3.0)
             try:
                 data, _ = sock.recvfrom(4096)
                 flags, _, _, _ = unpack_header(data[:13])
                 if flags & config.FLAG_FIN:
+                    # Step 2: ACK
+                    ack_pkt = pack_header(config.FLAG_ACK, 0, 0, 0)
+                    sock.sendto(ack_pkt, addr)
+                    # Step 3: FIN
                     fin_pkt = pack_header(config.FLAG_FIN, 0, 0, 0)
                     sock.sendto(fin_pkt, addr)
+                    # Step 4: Wait for client's final ACK
+                    sock.settimeout(1.0)
+                    try:
+                        data2, _ = sock.recvfrom(4096)
+                    except socket.timeout:
+                        pass
             except socket.timeout:
                 pass
 
@@ -209,6 +216,7 @@ class TestUDPEndToEnd:
         client = ReliableUDPClient("127.0.0.1", self.port)
         try:
             client._establish_connection()
+            client._generate_data()
             client._send_data()
         finally:
             client._terminate_connection()
@@ -221,7 +229,7 @@ class TestUDPEndToEnd:
         assert len(client.rtt_samples) > 0, "No RTT samples collected"
 
         # 验证总发送次数 ≥ 总包数（允许重传）
-        assert client.total_sends >= config.TOTAL_PACKETS
+        assert sum(p["retrans_count"] for p in client.packets) >= config.TOTAL_PACKETS
 
         assert self.server_error is None
 
@@ -249,6 +257,7 @@ class TestUDPEndToEnd:
         client = ReliableUDPClient("127.0.0.1", self.port)
         try:
             client._establish_connection()
+            client._generate_data()
             client._send_data()
         finally:
             client._terminate_connection()
@@ -269,11 +278,12 @@ class TestUDPEndToEnd:
         client = ReliableUDPClient("127.0.0.1", self.port)
         try:
             client._establish_connection()
+            client._generate_data()
             client._send_data()
         finally:
             client._terminate_connection()
 
-        loss_rate = (client.total_sends - config.TOTAL_PACKETS) / client.total_sends * 100
+        loss_rate = (sum(p["retrans_count"] for p in client.packets) - config.TOTAL_PACKETS) / sum(p["retrans_count"] for p in client.packets) * 100
         assert 0 <= loss_rate <= 100
         # 丢包率 25% 下，loss_rate 通常在 20-80% 之间
         assert 0 <= loss_rate <= 95  # 宽松范围

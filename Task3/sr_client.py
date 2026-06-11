@@ -37,8 +37,6 @@ class SRClient:
 
         self.base = 0
         self.next_seq = 0
-        self.total_sends = 0
-        self.retransmit_count = 0
         self.rtt_samples = []
         self.packets = []       # [{seq, size, data, sent_time, retrans_count, acked}]
         self.packet_sizes = []
@@ -63,6 +61,7 @@ class SRClient:
             log_event(LOG_PATH, "发送 SYN: StudentID={:#x}, TotalPackets={}",
                       student_id, config.TOTAL_PACKETS)
             try:
+                self.sock.settimeout(0.5)
                 data, _ = self.sock.recvfrom(4096)
                 if len(data) >= 13:
                     flags, seq, ack, _ = unpack_header(data[:13])
@@ -80,16 +79,37 @@ class SRClient:
         for _ in range(10):
             self._send_packet(config.FLAG_FIN, config.TOTAL_PACKETS, 0)
             log_event(LOG_PATH, "发送 FIN")
+
+            # Step 2: Wait for ACK
             try:
+                self.sock.settimeout(0.5)
+                data, _ = self.sock.recvfrom(4096)
+                if len(data) < 13:
+                    continue
+                flags, _, _, _ = unpack_header(data[:13])
+                if not (flags & config.FLAG_ACK):
+                    continue
+                log_event(LOG_PATH, "收到 FIN 的 ACK")
+            except socket.timeout:
+                continue
+            except ConnectionError:
+                break
+
+            # Step 3: Wait for FIN
+            try:
+                self.sock.settimeout(0.5)
                 data, _ = self.sock.recvfrom(4096)
                 if len(data) >= 13:
                     flags, _, _, _ = unpack_header(data[:13])
                     if flags & config.FLAG_FIN:
-                        log_event(LOG_PATH, "收到服务器 FIN，连接关闭")
+                        log_event(LOG_PATH, "收到服务器 FIN")
+                        # Step 4: Send final ACK
+                        self._send_packet(config.FLAG_ACK, 0, 0)
+                        log_event(LOG_PATH, "发送最终 ACK，连接关闭")
                         break
             except socket.timeout:
                 continue
-            except OSError:
+            except ConnectionError:
                 break
         self.sock.close()
 
@@ -125,7 +145,6 @@ class SRClient:
                     pkt["sent_time"] = self._send_packet(
                         config.FLAG_ACK, self.next_seq, 0, pkt["data"])
                     pkt["retrans_count"] += 1
-                    self.total_sends += 1
                     byte_s = self.byte_offsets[self.next_seq]
                     byte_e = byte_s + pkt["size"] - 1
                     log_event(LOG_PATH, "第{}个（偏移 {}~{}B）client 端已经发送",
@@ -186,20 +205,23 @@ class SRClient:
                     pkt["sent_time"] = self._send_packet(
                         config.FLAG_ACK, i, 0, pkt["data"])
                     pkt["retrans_count"] += 1
-                    self.total_sends += 1
-                    self.retransmit_count += 1
 
+    def _print_stats(self):
+        """打印传输统计"""
         log_event(LOG_PATH, "=== 汇总统计 ===")
         s = pd.Series(self.rtt_samples)
-        loss_rate = (self.total_sends - config.TOTAL_PACKETS) / self.total_sends * 100
+        total_sends = sum(p["retrans_count"] for p in self.packets)
+        retrans = sum(p["retrans_count"] - 1 for p in self.packets)
+        loss_rate = (total_sends - config.TOTAL_PACKETS) / total_sends * 100
+        
         log_event(LOG_PATH, "丢包率: {:.2f}%  (总发送{}次 / 成功{}包)",
-                  loss_rate, self.total_sends, config.TOTAL_PACKETS)
+                  loss_rate, total_sends, config.TOTAL_PACKETS)
         if len(s) > 0:
             log_event(LOG_PATH, "最大 RTT: {:.2f} ms", s.max())
             log_event(LOG_PATH, "最小 RTT: {:.2f} ms", s.min())
             log_event(LOG_PATH, "平均 RTT: {:.2f} ms", s.mean())
             log_event(LOG_PATH, "RTT 标准差: {:.2f} ms", s.std())
-        log_event(LOG_PATH, "重传次数: {}", self.retransmit_count)
+        log_event(LOG_PATH, "重传次数: {}", retrans)
         if len(s) > 0:
             print(f"\n{'='*50}")
             print(f"丢包率: {loss_rate:.2f}%")
@@ -207,7 +229,7 @@ class SRClient:
             print(f"最小 RTT: {s.min():.2f} ms")
             print(f"平均 RTT: {s.mean():.2f} ms")
             print(f"RTT 标准差: {s.std():.2f} ms")
-            print(f"重传次数: {self.retransmit_count}")
+            print(f"重传次数: {retrans}")
             print(f"{'='*50}")
 
     def run(self):
@@ -216,6 +238,7 @@ class SRClient:
                 f.write("")
             self._establish_connection()
             self._send_data()
+            self._print_stats()
         finally:
             self._terminate_connection()
 

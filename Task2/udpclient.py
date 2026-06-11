@@ -41,17 +41,13 @@ class ReliableUDPClient:
     def __init__(self, server_ip: str, server_port: int):
         self.server_addr = (server_ip, server_port)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.settimeout(0.1)
 
         # 滑动窗口
         self.base = 0
         self.next_seq = 0
 
         # 统计
-        self.total_sends = 0
-        self.retransmit_count = 0
         self.rtt_samples = []
-        self.send_times = [0.0] * config.TOTAL_PACKETS  # seq → 发送时间，0.0 = 未发送
         self.packets = []  # 数据包信息列表
         self.packet_sizes = []  # 每包大小
         self.byte_offsets = [0]  # 前缀和：byte_offsets[i] = 前 i 包的总字节数
@@ -65,7 +61,7 @@ class ReliableUDPClient:
         self.last_ack = -1
         self.dup_ack_count = 0
 
-        # 线程安全锁（保护 base/next_seq/dup_ack/last_ack/send_times）
+        # 线程安全锁（保护 base/next_seq/dup_ack/last_ack/packets）
         self._lock = threading.RLock()
 
         # 接收线程
@@ -75,6 +71,7 @@ class ReliableUDPClient:
 
     def _receiver(self):
         """独立接收线程，处理来自服务器的 ACK 报文"""
+        self.sock.settimeout(0.05)
         while self.running:
             try:
                 data, _ = self.sock.recvfrom(4096)
@@ -100,7 +97,7 @@ class ReliableUDPClient:
                             self.dup_ack_count = 0
             except socket.timeout:
                 continue
-            except OSError:
+            except ConnectionError:
                 return
 
     def _send_packet(
@@ -109,12 +106,11 @@ class ReliableUDPClient:
         seq: int = 0,
         ack: int = 0,
         data: bytes = b"",
-        record_time: bool = True,
     ) -> float:
         """发送报文，返回发送时间"""
         pkt = pack_header(flags, seq, ack, len(data)) + data
         self.sock.sendto(pkt, self.server_addr)
-        return time.time() if record_time else 0
+        return time.time()
 
     def _fast_retransmit(self):
         """快速重传：收到 3 个重复 ACK 时重传窗口内所有未确认包"""
@@ -132,14 +128,11 @@ class ReliableUDPClient:
                     pkt_info["sent_time"] = self._send_packet(
                         config.FLAG_ACK, i, 0, pkt_info["data"]
                     )
-                    self.send_times[i] = pkt_info["sent_time"]
                     pkt_info["retrans_count"] += 1
-                    self.total_sends += 1
                     log_event(LOG_PATH,
                         "快速重传 第{}个 (seq={}, 大小:{}B)", i + 1, i, pkt_info["size"]
                     )
 
-            self.retransmit_count += 1  # 一次快速重传事件，不管发了几个包
             self.dup_ack_count = 0
             self.next_seq = self.base
 
@@ -160,8 +153,9 @@ class ReliableUDPClient:
             )
 
             try:
+                self.sock.settimeout(0.5)
                 data, _ = self.sock.recvfrom(4096)
-                flags, seq, ack, _ = unpack_header(data[:13])
+                flags, _, ack, _ = unpack_header(data[:13])
                 if flags is None:
                     continue
                 if (flags & config.FLAG_SYN) and (flags & config.FLAG_ACK) and ack == 1:
@@ -183,25 +177,45 @@ class ReliableUDPClient:
             self._send_packet(config.FLAG_FIN, config.TOTAL_PACKETS, 0)
             log_event(LOG_PATH, "发送 FIN")
 
+            # Step 2: Wait for ACK
             try:
+                self.sock.settimeout(0.5)
+                data, _ = self.sock.recvfrom(4096)
+                flags, _, _, _ = unpack_header(data[:13])
+                if flags is None:
+                    continue
+                if not (flags & config.FLAG_ACK):
+                    continue
+                log_event(LOG_PATH, "收到 FIN 的 ACK")
+            except socket.timeout:
+                continue
+            except ConnectionError:
+                break
+
+            # Step 3: Wait for FIN
+            try:
+                self.sock.settimeout(0.5)
                 data, _ = self.sock.recvfrom(4096)
                 flags, _, _, _ = unpack_header(data[:13])
                 if flags is None:
                     continue
                 if flags & config.FLAG_FIN:
-                    log_event(LOG_PATH, "收到服务器 FIN，连接关闭")
+                    log_event(LOG_PATH, "收到服务器 FIN")
+                    # Step 4: Send final ACK
+                    self._send_packet(config.FLAG_ACK, 0, 0)
+                    log_event(LOG_PATH, "发送最终 ACK，连接关闭")
                     break
             except socket.timeout:
                 continue
-            except OSError:
+            except ConnectionError:
                 break
 
         self.running = False
         self.sock.close()
-
-    def _send_data(self):
-        """GBN 数据传输"""
-        log_event(LOG_PATH, "=== 数据传输阶段 ===")
+        
+    def _generate_data(self):
+        """数据生成"""
+        log_event(LOG_PATH, "=== 数据生成阶段 ===")
 
         # 生成测试数据
         base_text = (
@@ -232,6 +246,10 @@ class ReliableUDPClient:
                 }
             )
 
+    def _send_data(self):
+        """GBN 数据传输"""
+        log_event(LOG_PATH, "=== 数据传输阶段 ===")
+        
         self.recv_thread.start()
 
         while self.base < config.TOTAL_PACKETS:
@@ -256,9 +274,7 @@ class ReliableUDPClient:
                     )
 
                     with self._lock:
-                        self.send_times[self.next_seq] = pkt["sent_time"]
                         pkt["retrans_count"] += 1
-                        self.total_sends += 1
                         self.next_seq += 1
                 else:
                     with self._lock:
@@ -273,8 +289,9 @@ class ReliableUDPClient:
                         self.base = ack_num
 
                         # 计算 RTT（对刚被确认的最老包）
-                        if self.send_times[old_base] > 0:
-                            rtt_ms = (time.time() - self.send_times[old_base]) * 1000
+                        sent_t = self.packets[old_base]["sent_time"]
+                        if sent_t > 0:
+                            rtt_ms = (time.time() - sent_t) * 1000
                             self.rtt_samples.append(rtt_ms)
 
                         # 标记已确认的包
@@ -282,7 +299,7 @@ class ReliableUDPClient:
                             self.packets[s]["acked"] = True
                             byte_s = self.byte_offsets[s]
                             byte_e = byte_s + self.packet_sizes[s] - 1
-                            pkt_rtt = (time.time() - self.send_times[s]) * 1000
+                            pkt_rtt = (time.time() - self.packets[s]["sent_time"]) * 1000
                             log_event(LOG_PATH,
                                 "第{}个（偏移 {}~{}B）server 端已经收到，RTT 是 {:.2f} ms",
                                 s + 1,
@@ -302,7 +319,6 @@ class ReliableUDPClient:
                                 self.estimated_rtt = 0.875 * self.estimated_rtt + 0.125 * sample
                                 self.dev_rtt = 0.75 * self.dev_rtt + 0.25 * abs(sample - self.estimated_rtt)
                             self.rto = max(0.05, min(3.0, (self.estimated_rtt + 4 * self.dev_rtt) / 1000))
-                        self.next_seq = self.base
 
             except queue.Empty:
                 # 超时重传整个窗口
@@ -315,7 +331,6 @@ class ReliableUDPClient:
                             self.base,
                             self.next_seq - 1,
                         )
-                        self.retransmit_count += 1
                         for s in range(self.base, self.next_seq):
                             self.packets[s]["sent_time"] = 0
                         self.next_seq = self.base
@@ -330,20 +345,23 @@ class ReliableUDPClient:
             log_event(LOG_PATH, "无 RTT 样本")
             return
 
-        loss_rate = (self.total_sends - config.TOTAL_PACKETS) / self.total_sends * 100
+        total_sends = sum(p["retrans_count"] for p in self.packets)
+        retrans = sum(p["retrans_count"] - 1 for p in self.packets)
+        
+        loss_rate = (total_sends - config.TOTAL_PACKETS) / total_sends * 100
         s = pd.Series(self.rtt_samples)
 
         log_event(LOG_PATH, 
             "丢包率: {:.2f}%  (总发送{}次 / 成功{}包)",
             loss_rate,
-            self.total_sends,
+            total_sends,
             config.TOTAL_PACKETS,
         )
         log_event(LOG_PATH, "最大 RTT: {:.2f} ms", s.max())
         log_event(LOG_PATH, "最小 RTT: {:.2f} ms", s.min())
         log_event(LOG_PATH, "平均 RTT: {:.2f} ms", s.mean())
         log_event(LOG_PATH, "RTT 标准差: {:.2f} ms", s.std())
-        log_event(LOG_PATH, "重传次数: {}", self.retransmit_count)
+        log_event(LOG_PATH, "重传次数: {}", retrans)
 
         print(f"\n{'=' * 50}")
         print(f"丢包率: {loss_rate:.2f}%")
@@ -351,7 +369,7 @@ class ReliableUDPClient:
         print(f"最小 RTT: {s.min():.2f} ms")
         print(f"平均 RTT: {s.mean():.2f} ms")
         print(f"RTT 标准差: {s.std():.2f} ms")
-        print(f"重传次数: {self.retransmit_count}")
+        print(f"重传次数: {retrans}")
         print(f"{'=' * 50}")
 
     def run(self):
@@ -360,6 +378,7 @@ class ReliableUDPClient:
             with open(LOG_PATH, "w", encoding="utf-8") as f:
                 f.write("")
             self._establish_connection()
+            self._generate_data()
             self._send_data()
             self._print_stats()
         finally:
