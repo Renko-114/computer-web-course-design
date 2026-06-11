@@ -1,5 +1,6 @@
 __pycache__/
 .ruff_cache/
+.pytest_cache/
 *.pyc
 *.pyo
 .DS_Store
@@ -12,4 +13,4 @@ run_log.txt
 *_reversed.txt
 reversed_output.txt
 *_extracted.md
-_build_docs.py
+~$*.docx
