@@ -101,8 +101,6 @@ class TestReliableUDPClientInit:
         assert c.base == 0
         assert c.next_seq == 0
         assert c.rtt_samples == []
-        assert c.last_ack == -1
-        assert c.dup_ack_count == 0
         assert hasattr(c, "_lock")
         assert c.sock is not None
         c.sock.close()

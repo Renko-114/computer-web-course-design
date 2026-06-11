@@ -36,10 +36,9 @@ class TestClientInit:
 
 
 class TestSREndToEnd:
-    _port = 12330
+    _port = 14300
 
-    @pytest.fixture(autouse=True)
-    def setup(self):
+    def setup_method(self):
         TestSREndToEnd._port += 1
         self.port = TestSREndToEnd._port
         self.ready = threading.Event()
@@ -71,6 +70,8 @@ class TestSREndToEnd:
                     continue
                 flags, seq, ack, dlen = unpack_header(data[:13])
                 if not (flags & config.FLAG_ACK):
+                    if flags & config.FLAG_FIN:
+                        break  # FIN 来了，退出数据阶段
                     continue
                 if rng.random() < config.DROP_RATE / 2:
                     continue
@@ -83,24 +84,28 @@ class TestSREndToEnd:
                 elif seq < base:
                     ack_pkt = pack_header(config.FLAG_ACK, 0, seq, 0)
                     sock.sendto(ack_pkt, addr)
+            # Phase 3: FIN (4-step)
             sock.settimeout(3.0)
-            try:
-                data, _ = sock.recvfrom(4096)
-                flags, _, _, _ = unpack_header(data[:13])
-                if flags & config.FLAG_FIN:
-                    # Step 2: ACK
-                    ack_pkt = pack_header(config.FLAG_ACK, 0, 0, 0)
-                    sock.sendto(ack_pkt, addr)
-                    # Step 3: FIN
-                    sock.sendto(pack_header(config.FLAG_FIN, 0, 0, 0), addr)
-                    # Step 4: Wait for client's final ACK
-                    sock.settimeout(1.0)
-                    try:
-                        data2, _ = sock.recvfrom(4096)
-                    except socket.timeout:
-                        pass
-            except socket.timeout:
-                pass
+            # 如果数据循环因收到 FIN 而 break，flags 仍持有 FIN 标记
+            # 否则需要再 recvfrom 等待 FIN
+            if not (flags & config.FLAG_FIN):
+                try:
+                    data, _ = sock.recvfrom(4096)
+                    flags, _, _, _ = unpack_header(data[:13])
+                except socket.timeout:
+                    flags = 0
+            if flags & config.FLAG_FIN:
+                # Step 2: ACK
+                ack_pkt = pack_header(config.FLAG_ACK, 0, 0, 0)
+                sock.sendto(ack_pkt, addr)
+                # Step 3: FIN
+                sock.sendto(pack_header(config.FLAG_FIN, 0, 0, 0), addr)
+                # Step 4: Wait for client's final ACK
+                sock.settimeout(1.0)
+                try:
+                    data2, _ = sock.recvfrom(4096)
+                except socket.timeout:
+                    pass
             sock.close()
         except Exception as e:
             self.err = e
@@ -116,7 +121,6 @@ class TestSREndToEnd:
             c._send_data()
             acked = sum(1 for p in c.packets if p["acked"])
             assert acked == config.TOTAL_PACKETS
-            assert c.total_sends >= config.TOTAL_PACKETS
         finally:
             c._terminate_connection()
         assert self.err is None

@@ -17,6 +17,8 @@ import struct
 import random
 import os
 import time
+import threading
+import queue
 import argparse
 
 import pandas as pd
@@ -46,11 +48,70 @@ class SRClient:
         self.estimated_rtt = None
         self.dev_rtt = None
 
+        self._lock = threading.RLock()
+        self.running = True
+        self.recv_thread = threading.Thread(target=self._receiver, daemon=True)
+
     def _send_packet(self, flags: int, seq: int = 0, ack: int = 0,
                      data: bytes = b"") -> float:
         pkt = pack_header(flags, seq, ack, len(data)) + data
         self.sock.sendto(pkt, self.server_addr)
         return time.time()
+
+    def _receiver(self):
+        """独立接收线程，处理来自服务器的 ACK 报文"""
+        self.sock.settimeout(0.05)
+        while self.running:
+            try:
+                data, _ = self.sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except ConnectionError:
+                return
+
+            if len(data) < 13:
+                continue
+            flags, _, ack_seq, _ = unpack_header(data[:13])
+            if flags is None:
+                continue
+            if not (flags & config.FLAG_ACK):
+                continue
+
+            # SR: ACK 字段携带被确认的 seq
+            seq = ack_seq
+            with self._lock:
+                if (self.base <= seq < min(self.base + config.WINDOW_SIZE,
+                                           config.TOTAL_PACKETS)
+                        and not self.packets[seq]["acked"]):
+                    self.packets[seq]["acked"] = True
+                    sent_t = self.packets[seq]["sent_time"]
+                    if sent_t > 0:
+                        rtt_ms = (time.time() - sent_t) * 1000
+                        self.rtt_samples.append(rtt_ms)
+                        byte_s = self.byte_offsets[seq]
+                        byte_e = byte_s + self.packets[seq]["size"] - 1
+                        log_event(LOG_PATH,
+                            "第{}个（偏移 {}~{}B）server 端已经收到，RTT 是 {:.2f} ms",
+                            seq + 1, byte_s, byte_e, rtt_ms)
+
+                        # 自适应 RTO
+                        sample = self.rtt_samples[-1]
+                        if self.estimated_rtt is None:
+                            self.estimated_rtt = sample
+                            self.dev_rtt = sample / 2
+                        else:
+                            self.estimated_rtt = (
+                                0.875 * self.estimated_rtt + 0.125 * sample)
+                            self.dev_rtt = (
+                                0.75 * self.dev_rtt
+                                + 0.25 * abs(sample - self.estimated_rtt))
+                        self.rto = max(0.05, min(3.0,
+                            (self.estimated_rtt + 4 * self.dev_rtt) / 1000))
+
+                    # 推进 base
+                    while (self.base < config.TOTAL_PACKETS
+                           and self.packets[self.base]["acked"]):
+                        self.base += 1
 
     def _establish_connection(self):
         log_event(LOG_PATH, "=== 三次握手阶段 ===")
@@ -76,6 +137,7 @@ class SRClient:
 
     def _terminate_connection(self):
         log_event(LOG_PATH, "=== 四次挥手阶段 ===")
+        self.running = False
         for _ in range(10):
             self._send_packet(config.FLAG_FIN, config.TOTAL_PACKETS, 0)
             log_event(LOG_PATH, "发送 FIN")
@@ -111,6 +173,7 @@ class SRClient:
                 continue
             except ConnectionError:
                 break
+
         self.sock.close()
 
     def _send_data(self):
@@ -134,7 +197,7 @@ class SRClient:
                 "sent_time": 0.0, "retrans_count": 0, "acked": False,
             })
 
-        self.sock.settimeout(0.05)
+        self.recv_thread.start()
 
         while self.base < config.TOTAL_PACKETS:
             # 发送窗口内未发出的新包
@@ -151,49 +214,6 @@ class SRClient:
                               self.next_seq + 1, byte_s, byte_e)
                 self.next_seq += 1
 
-            # 收 ACK
-            try:
-                data, _ = self.sock.recvfrom(4096)
-                if len(data) >= 13:
-                    flags, _, ack_seq, _ = unpack_header(data[:13])
-                    if flags & config.FLAG_ACK:
-                        seq = ack_seq  # SR: ACK 字段携带被确认的 seq
-                        if (self.base <= seq < min(self.base + config.WINDOW_SIZE,
-                                                    config.TOTAL_PACKETS)
-                                and not self.packets[seq]["acked"]):
-                            self.packets[seq]["acked"] = True
-                            # 收集 RTT
-                            sent_t = self.packets[seq]["sent_time"]
-                            if sent_t > 0:
-                                rtt_ms = (time.time() - sent_t) * 1000
-                                self.rtt_samples.append(rtt_ms)
-                                byte_s = self.byte_offsets[seq]
-                                byte_e = byte_s + self.packets[seq]["size"] - 1
-                                log_event(LOG_PATH,
-                                    "第{}个（偏移 {}~{}B）server 端已经收到，RTT 是 {:.2f} ms",
-                                    seq + 1, byte_s, byte_e, rtt_ms)
-
-                                # 自适应 RTO（TCP EWMA）
-                                sample = self.rtt_samples[-1]
-                                if self.estimated_rtt is None:
-                                    self.estimated_rtt = sample
-                                    self.dev_rtt = sample / 2
-                                else:
-                                    self.estimated_rtt = (
-                                        0.875 * self.estimated_rtt + 0.125 * sample)
-                                    self.dev_rtt = (
-                                        0.75 * self.dev_rtt
-                                        + 0.25 * abs(sample - self.estimated_rtt))
-                                self.rto = max(0.05, min(3.0,
-                                    (self.estimated_rtt + 4 * self.dev_rtt) / 1000))
-
-                            # 推进 base 到第一个未 ack 的包
-                            while (self.base < config.TOTAL_PACKETS
-                                   and self.packets[self.base]["acked"]):
-                                self.base += 1
-            except socket.timeout:
-                pass
-
             # SR: 只重传超时的包（不是整个窗口）
             now = time.time()
             for i in range(self.base, min(self.base + config.WINDOW_SIZE,
@@ -205,6 +225,8 @@ class SRClient:
                     pkt["sent_time"] = self._send_packet(
                         config.FLAG_ACK, i, 0, pkt["data"])
                     pkt["retrans_count"] += 1
+
+            time.sleep(0.01)
 
     def _print_stats(self):
         """打印传输统计"""

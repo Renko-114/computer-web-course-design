@@ -57,11 +57,7 @@ class ReliableUDPClient:
         self.estimated_rtt = None  # EWMA 平滑 RTT，首次测量后初始化
         self.dev_rtt = None        # EWMA RTT 偏差，首次测量后初始化
 
-        # 快速重传
-        self.last_ack = -1
-        self.dup_ack_count = 0
-
-        # 线程安全锁（保护 base/next_seq/dup_ack/last_ack/packets）
+        # 线程安全锁（保护 base/next_seq）
         self._lock = threading.RLock()
 
         # 接收线程
@@ -72,29 +68,35 @@ class ReliableUDPClient:
     def _receiver(self):
         """独立接收线程，处理来自服务器的 ACK 报文"""
         self.sock.settimeout(0.05)
+        last_seq = -1
+        dup_cnt = 0
+
         while self.running:
             try:
                 data, _ = self.sock.recvfrom(4096)
-                flags, seq, ack, _ = unpack_header(data[:13])
-                if flags is None:
+                result = unpack_header(data[:13])
+                if result is None:
+                    continue
+                flags, _, ack, _ = result
+
+                if not (flags & config.FLAG_ACK):
                     continue
 
-                if flags & config.FLAG_ACK:
-                    self.ack_queue.put(ack)
-                    # 快速重传检测（线程安全）
+                self.ack_queue.put(ack)
+
+                if ack != last_seq:
+                    last_seq = ack
+                    dup_cnt = 0
+                else:
+                    dup_cnt += 1
+
+                if dup_cnt >= config.FAST_RETX_THRESHOLD:
+                    log_event(LOG_PATH,
+                        "收到 {} 个重复 ACK={}，触发快速重传",
+                        config.FAST_RETX_THRESHOLD, ack)
                     with self._lock:
-                        if ack == self.last_ack:
-                            self.dup_ack_count += 1
-                            if self.dup_ack_count == config.FAST_RETX_THRESHOLD:
-                                log_event(LOG_PATH, 
-                                    "收到 {} 个重复 ACK={}，触发快速重传",
-                                    config.FAST_RETX_THRESHOLD,
-                                    ack,
-                                )
-                                self._fast_retransmit()
-                        else:
-                            self.last_ack = ack
-                            self.dup_ack_count = 0
+                        dup_cnt = 0
+                        self.next_seq = self.base
             except socket.timeout:
                 continue
             except ConnectionError:
@@ -111,30 +113,6 @@ class ReliableUDPClient:
         pkt = pack_header(flags, seq, ack, len(data)) + data
         self.sock.sendto(pkt, self.server_addr)
         return time.time()
-
-    def _fast_retransmit(self):
-        """快速重传：收到 3 个重复 ACK 时重传窗口内所有未确认包"""
-        with self._lock:
-            # 传输已完成后旧 ACK 仍可能触发快速重传，base 已推进到末尾，
-            # 不加此判断 range(self.base, ...) 会越界访问 packets[30]
-            if self.base >= config.TOTAL_PACKETS:
-                return
-
-            for i in range(
-                self.base, min(self.base + config.WINDOW_SIZE, config.TOTAL_PACKETS)
-            ):
-                if not self.packets[i]["acked"]:
-                    pkt_info = self.packets[i]
-                    pkt_info["sent_time"] = self._send_packet(
-                        config.FLAG_ACK, i, 0, pkt_info["data"]
-                    )
-                    pkt_info["retrans_count"] += 1
-                    log_event(LOG_PATH,
-                        "快速重传 第{}个 (seq={}, 大小:{}B)", i + 1, i, pkt_info["size"]
-                    )
-
-            self.dup_ack_count = 0
-            self.next_seq = self.base
 
     def _establish_connection(self):
         """三次握手建立连接"""
@@ -253,32 +231,26 @@ class ReliableUDPClient:
         self.recv_thread.start()
 
         while self.base < config.TOTAL_PACKETS:
-            # 发送窗口内未发送的包
+            # 发送窗口内的包
             while self.next_seq < min(
                 self.base + config.WINDOW_SIZE, config.TOTAL_PACKETS
             ):
                 pkt = self.packets[self.next_seq]
-                if pkt["sent_time"] == 0:
-                    pkt["sent_time"] = self._send_packet(
-                        config.FLAG_ACK, self.next_seq, 0, pkt["data"]
-                    )
-                    byte_s = self.byte_offsets[self.next_seq]
-                    byte_e = byte_s + pkt["size"] - 1
-                    tag = "重传" if pkt["retrans_count"] > 1 else ""
-                    log_event(LOG_PATH,
-                        "{}第{}个（偏移 {}~{}B）client 端已经发送",
-                        tag,
-                        self.next_seq + 1,
-                        byte_s,
-                        byte_e,
-                    )
-
-                    with self._lock:
-                        pkt["retrans_count"] += 1
-                        self.next_seq += 1
-                else:
-                    with self._lock:
-                        self.next_seq += 1
+                tag = "重传" if pkt["retrans_count"] > 0 else ""
+                pkt["sent_time"] = self._send_packet(
+                    config.FLAG_ACK, self.next_seq, 0, pkt["data"]
+                )
+                pkt["retrans_count"] += 1
+                byte_s = self.byte_offsets[self.next_seq]
+                byte_e = byte_s + pkt["size"] - 1
+                log_event(LOG_PATH,
+                    "{}第{}个（偏移 {}~{}B）client 端已经发送",
+                    tag,
+                    self.next_seq + 1,
+                    byte_s,
+                    byte_e,
+                )
+                self.next_seq += 1
 
             # 等待 ACK
             try:
@@ -287,7 +259,7 @@ class ReliableUDPClient:
                     if ack_num > self.base:
                         old_base = self.base
                         self.base = ack_num
-
+                        
                         # 计算 RTT（对刚被确认的最老包）
                         sent_t = self.packets[old_base]["sent_time"]
                         if sent_t > 0:
@@ -307,8 +279,7 @@ class ReliableUDPClient:
                                 byte_e,
                                 pkt_rtt,
                             )
-
-
+                            
                         # 自适应 RTO（TCP EWMA 算法）
                         if self.rtt_samples:
                             sample = self.rtt_samples[-1]  # 本次 RTT 样本
@@ -321,19 +292,15 @@ class ReliableUDPClient:
                             self.rto = max(0.05, min(3.0, (self.estimated_rtt + 4 * self.dev_rtt) / 1000))
 
             except queue.Empty:
-                # 超时重传整个窗口
-                with self._lock:
-                    if self.base < config.TOTAL_PACKETS:
-                        log_event(LOG_PATH,
-                            "超时 {:.0f}ms（RTO={:.0f}ms），重传窗口 seq={}..{}",
-                            self.rto * 1000,
-                            self.rto * 1000,
-                            self.base,
-                            self.next_seq - 1,
-                        )
-                        for s in range(self.base, self.next_seq):
-                            self.packets[s]["sent_time"] = 0
-                        self.next_seq = self.base
+                # 超时重传：回退 next_seq，让主循环自然重发整个窗口
+                log_event(LOG_PATH,
+                    "超时 {:.0f}ms（RTO={:.0f}ms），重传窗口 seq={}..{}",
+                    self.rto * 1000,
+                    self.rto * 1000,
+                    self.base,
+                    self.next_seq - 1,
+                )
+                self.next_seq = self.base
 
         self.running = False
 
