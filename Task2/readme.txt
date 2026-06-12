@@ -55,7 +55,9 @@
 
   四次挥手阶段:
     FIN(client):  [Flags=0x04][Seq=30][Ack=0][Len=0]
+    ACK(server):  [Flags=0x02][Seq=0][Ack=0][Len=0]
     FIN(server):  [Flags=0x04][Seq=0][Ack=0][Len=0]
+    ACK(client):  [Flags=0x02][Seq=0][Ack=0][Len=0]
 
   StudentID 计算: 学号后4位(2913) XOR 0x5A3C = 0x515D
 
@@ -63,7 +65,7 @@
 
   - 窗口大小：5 包
   - 累积确认：Server 只接受按序到达的包，乱序丢弃
-  - 超时重传：RTO 自适应（初始 300ms，基于最近 5 次 RTT × 5 动态调整，最小 50ms）
+  - 超时重传：RTO 自适应（初始 300ms，TCP EWMA 算法：estimated_rtt + 4×dev_rtt，上下界 50ms~3s）
   - 快速重传：收到 3 次重复 ACK 立即重传窗口（不等超时）
   - 丢包模拟：Server 25% 概率不响应 DATA 报文
   - 独立接收线程：客户端使用独立线程异步接收 ACK，主线程负责发送
@@ -88,6 +90,6 @@
   - 能解释 StudentID 计算过程：2913 XOR 0x5A3C = 0x515D
   - 能解释 GBN 窗口滑动机制：发送窗口 5 包、累积确认、超时重传整个窗口
   - 能解释快速重传触发条件：收到 3 次相同 ACK（重复 ACK）
-  - 能解释 RTO 自适应算法：RTO = max(50ms, min(3s, avgRTT × 5))
+  - 能解释 RTO 自适应算法：TCP EWMA（estimated_rtt = 0.875×旧 + 0.125×样本，dev_rtt = 0.75×旧 + 0.25×|样本-估计|），RTO = max(50ms, min(3s, estimated_rtt + 4×dev_rtt))
   - 能解释丢包率计算：丢包率 = (总发送次数 - 30) / 总发送次数 × 100%
-  - 能解释四次挥手过程：Client FIN → Server FIN → 连接关闭
+  - 能解释四次挥手过程：Client FIN → Server ACK → Server FIN → Client ACK → 连接关闭
