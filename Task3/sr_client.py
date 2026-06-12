@@ -48,7 +48,6 @@ class SRClient:
         self.estimated_rtt = None
         self.dev_rtt = None
 
-        self._lock = threading.RLock()
         self.running = True
         self.recv_thread = threading.Thread(target=self._receiver, daemon=True)
 
@@ -79,39 +78,37 @@ class SRClient:
 
             # SR: ACK 字段携带被确认的 seq
             seq = ack_seq
-            with self._lock:
-                if (self.base <= seq < min(self.base + config.WINDOW_SIZE,
-                                           config.TOTAL_PACKETS)
-                        and not self.packets[seq]["acked"]):
-                    self.packets[seq]["acked"] = True
-                    sent_t = self.packets[seq]["sent_time"]
-                    if sent_t > 0:
-                        rtt_ms = (time.time() - sent_t) * 1000
-                        self.rtt_samples.append(rtt_ms)
-                        byte_s = self.byte_offsets[seq]
-                        byte_e = byte_s + self.packets[seq]["size"] - 1
-                        log_event(LOG_PATH,
-                            "第{}个（偏移 {}~{}B）server 端已经收到，RTT 是 {:.2f} ms",
-                            seq + 1, byte_s, byte_e, rtt_ms)
-
-                        # 自适应 RTO
-                        sample = self.rtt_samples[-1]
-                        if self.estimated_rtt is None:
-                            self.estimated_rtt = sample
-                            self.dev_rtt = sample / 2
-                        else:
-                            self.estimated_rtt = (
-                                0.875 * self.estimated_rtt + 0.125 * sample)
-                            self.dev_rtt = (
-                                0.75 * self.dev_rtt
-                                + 0.25 * abs(sample - self.estimated_rtt))
-                        self.rto = max(0.05, min(3.0,
-                            (self.estimated_rtt + 4 * self.dev_rtt) / 1000))
-
-                    # 推进 base
-                    while (self.base < config.TOTAL_PACKETS
-                           and self.packets[self.base]["acked"]):
-                        self.base += 1
+            if (self.base <= seq < min(self.base + config.WINDOW_SIZE,
+                                       config.TOTAL_PACKETS)
+                    and not self.packets[seq]["acked"]):
+                self.packets[seq]["acked"] = True
+                sent_t = self.packets[seq]["sent_time"]
+                
+                rtt_ms = (time.time() - sent_t) * 1000
+                self.rtt_samples.append(rtt_ms)
+                byte_s = self.byte_offsets[seq]
+                byte_e = byte_s + self.packets[seq]["size"] - 1
+                log_event(LOG_PATH,
+                    "第{}个（偏移 {}~{}B）server 端已经收到，RTT 是 {:.2f} ms",
+                    seq + 1, byte_s, byte_e, rtt_ms)
+                # 自适应 RTO
+                sample = self.rtt_samples[-1]
+                if self.estimated_rtt is None:
+                    self.estimated_rtt = sample
+                    self.dev_rtt = sample / 2
+                else:
+                    self.estimated_rtt = (
+                        0.875 * self.estimated_rtt + 0.125 * sample)
+                    self.dev_rtt = (
+                        0.75 * self.dev_rtt
+                        + 0.25 * abs(sample - self.estimated_rtt))
+                self.rto = max(0.05, min(3.0,
+                    (self.estimated_rtt + 4 * self.dev_rtt) / 1000))
+                
+                # 推进 base
+                while (self.base < config.TOTAL_PACKETS
+                       and self.packets[self.base]["acked"]):
+                    self.base += 1
 
     def _establish_connection(self):
         log_event(LOG_PATH, "=== 三次握手阶段 ===")
@@ -176,7 +173,7 @@ class SRClient:
 
         self.sock.close()
 
-    def _send_data(self):
+    def _generate_data(self):
         log_event(LOG_PATH, "=== 数据传输阶段 ===")
         base_text = (
             "The quick brown fox jumps over the lazy dog. "
@@ -196,6 +193,8 @@ class SRClient:
                 "seq": i, "size": pkt_size, "data": data,
                 "sent_time": 0.0, "retrans_count": 0, "acked": False,
             })
+
+    def _send_data(self):
 
         self.recv_thread.start()
 
@@ -259,6 +258,7 @@ class SRClient:
             with open(LOG_PATH, "w", encoding="utf-8") as f:
                 f.write("")
             self._establish_connection()
+            self._generate_data()
             self._send_data()
             self._print_stats()
         finally:
@@ -270,6 +270,7 @@ def main() -> None:
     parser.add_argument("--server_ip", default=config.DEFAULT_SERVER_IP, help="服务器 IP")
     parser.add_argument("--server_port", type=int, default=config.DEFAULT_PORT, help="服务器端口")
     args = parser.parse_args()
+    
     SRClient(args.server_ip, args.server_port).run()
 
 

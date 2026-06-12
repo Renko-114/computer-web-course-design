@@ -96,7 +96,8 @@ class ReliableUDPClient:
                         config.FAST_RETX_THRESHOLD, ack)
                     with self._lock:
                         dup_cnt = 0
-                        self.next_seq = self.base
+                        if self.base < config.TOTAL_PACKETS:
+                            self.next_seq = self.base
             except socket.timeout:
                 continue
             except ConnectionError:
@@ -227,7 +228,7 @@ class ReliableUDPClient:
     def _send_data(self):
         """GBN 数据传输"""
         log_event(LOG_PATH, "=== 数据传输阶段 ===")
-        
+
         self.recv_thread.start()
 
         while self.base < config.TOTAL_PACKETS:
@@ -245,60 +246,51 @@ class ReliableUDPClient:
                 byte_e = byte_s + pkt["size"] - 1
                 log_event(LOG_PATH,
                     "{}第{}个（偏移 {}~{}B）client 端已经发送",
-                    tag,
-                    self.next_seq + 1,
-                    byte_s,
-                    byte_e,
+                    tag, self.next_seq + 1, byte_s, byte_e,
                 )
                 self.next_seq += 1
 
-            # 等待 ACK
             try:
                 ack_num = self.ack_queue.get(timeout=self.rto)
                 with self._lock:
                     if ack_num > self.base:
                         old_base = self.base
                         self.base = ack_num
-                        
-                        # 计算 RTT（对刚被确认的最老包）
-                        sent_t = self.packets[old_base]["sent_time"]
-                        if sent_t > 0:
-                            rtt_ms = (time.time() - sent_t) * 1000
-                            self.rtt_samples.append(rtt_ms)
+                    else:
+                        continue
 
-                        # 标记已确认的包
-                        for s in range(old_base, self.base):
-                            self.packets[s]["acked"] = True
-                            byte_s = self.byte_offsets[s]
-                            byte_e = byte_s + self.packet_sizes[s] - 1
-                            pkt_rtt = (time.time() - self.packets[s]["sent_time"]) * 1000
-                            log_event(LOG_PATH,
-                                "第{}个（偏移 {}~{}B）server 端已经收到，RTT 是 {:.2f} ms",
-                                s + 1,
-                                byte_s,
-                                byte_e,
-                                pkt_rtt,
-                            )
-                            
-                        # 自适应 RTO（TCP EWMA 算法）
-                        if self.rtt_samples:
-                            sample = self.rtt_samples[-1]  # 本次 RTT 样本
-                            if self.estimated_rtt is None:
-                                self.estimated_rtt = sample
-                                self.dev_rtt = sample / 2
-                            else:
-                                self.estimated_rtt = 0.875 * self.estimated_rtt + 0.125 * sample
-                                self.dev_rtt = 0.75 * self.dev_rtt + 0.25 * abs(sample - self.estimated_rtt)
-                            self.rto = max(0.05, min(3.0, (self.estimated_rtt + 4 * self.dev_rtt) / 1000))
+                # 以下只读 packets，不与 receiver 竞争，无需持锁
+                sent_t = self.packets[old_base]["sent_time"]
+                if sent_t > 0:
+                    rtt_ms = (time.time() - sent_t) * 1000
+                    self.rtt_samples.append(rtt_ms)
+
+                for s in range(old_base, self.base):
+                    self.packets[s]["acked"] = True
+                    byte_s = self.byte_offsets[s]
+                    byte_e = byte_s + self.packet_sizes[s] - 1
+                    pkt_rtt = (time.time() - self.packets[s]["sent_time"]) * 1000
+                    log_event(LOG_PATH,
+                        "第{}个（偏移 {}~{}B）server 端已经收到，RTT 是 {:.2f} ms",
+                        s + 1, byte_s, byte_e, pkt_rtt,
+                    )
+
+                # 自适应 RTO（TCP EWMA 算法）
+                sample = self.rtt_samples[-1]
+                if self.estimated_rtt is None:
+                    self.estimated_rtt = sample
+                    self.dev_rtt = sample / 2
+                else:
+                    self.estimated_rtt = 0.875 * self.estimated_rtt + 0.125 * sample
+                    self.dev_rtt = 0.75 * self.dev_rtt + 0.25 * abs(sample - self.estimated_rtt)
+                self.rto = max(0.05, min(3.0,
+                    (self.estimated_rtt + 4 * self.dev_rtt) / 1000))
 
             except queue.Empty:
-                # 超时重传：回退 next_seq，让主循环自然重发整个窗口
                 log_event(LOG_PATH,
                     "超时 {:.0f}ms（RTO={:.0f}ms），重传窗口 seq={}..{}",
-                    self.rto * 1000,
-                    self.rto * 1000,
-                    self.base,
-                    self.next_seq - 1,
+                    self.rto * 1000, self.rto * 1000,
+                    self.base, self.next_seq - 1,
                 )
                 self.next_seq = self.base
 

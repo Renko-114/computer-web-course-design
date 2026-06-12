@@ -44,7 +44,7 @@ class SRServerHandler:
     def _establish_connection(self):
         while True:
             data, self.client_addr = self.sock.recvfrom(4096)
-            flags, seq, ack, length = unpack_header(data[:13])
+            flags, _, _, _ = unpack_header(data[:13])
             if flags is None:
                 continue
             payload = data[13:]
