@@ -7,7 +7,7 @@ import os
 import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-GIT_URL = BASE_DIR
+GIT_URL = "https://github.com/Renko-114/computer-web-course-design"
 
 
 def safe_save(doc, path):
@@ -269,7 +269,6 @@ while True:
 
     sec(doc, "d.", "git 的 URL")
     para(doc, GIT_URL, indent=False)
-    para(doc, "（可推送至 GitHub/Gitee 后替换为远程 URL）", indent=False)
 
     safe_save(doc, os.path.join(task1_dir, "tcp_packet_capture.docx"))
     print("Task1 done")
@@ -404,7 +403,6 @@ Server: 收 FIN -> 发 ACK -> 发 FIN -> 等 ACK""")
 
     sec(doc, "d.", "git 的 URL")
     para(doc, GIT_URL, indent=False)
-    para(doc, "（可推送至 GitHub/Gitee 后替换为远程 URL）", indent=False)
 
     safe_save(doc, os.path.join(task2_dir, "udp_packet_capture.docx"))
     print("Task2 done")
